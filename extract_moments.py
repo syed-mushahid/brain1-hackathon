@@ -1,0 +1,976 @@
+#!/usr/bin/env python
+"""
+extract_moments.py
+==================
+
+Builds `moments.json` (+ one preview PNG per moment) for the football decision
+game from the DFL / IDSSE open dataset (7 Bundesliga matches 2022/23, tracking
+at 25 fps + events, CC-BY 4.0; Bassek et al. 2025, Scientific Data,
+doi:10.1038/s41597-025-04505-y).
+
+A "moment" is two consecutive open-play passes by the same team:
+    pass 1: A -> B            (the incoming ball)
+    pass 2: B -> ?            (made <= 3 s after B receives; the decision we test)
+
+Run (one command):
+    pip install kloppy matplotlib numpy
+    python extract_moments.py                    # data in ./RawData/28196177 (or ./data)
+
+Useful options:
+    --data DIR        folder with the DFL XML files (matchinformation / events_raw /
+                      positions_raw_observed per match)
+    --n 30            number of moments to keep
+    --seed 7          selection seed (selection is deterministic for a given seed)
+    --workers 2       parallel processes for parsing the (400 MB) tracking files
+    --cache DIR       where parsed tracking arrays are cached (.npz); delete to re-parse
+
+Pipeline
+--------
+1. kloppy (sportec module) loads events and tracking.  Tracking is converted to
+   compact numpy arrays per period and cached, because each XML takes ~80 s to parse.
+2. Candidate pass pairs come from the event feed.  The event clock and the
+   tracking clock are aligned via absolute UTC timestamps, and then the exact kick /
+   reception frames are refined from the tracking itself (ball-to-player distance).
+3. Each valid candidate gets its options scored (see `option_value`) and a
+   difficulty (see `difficulty`).
+4. ~30 moments are picked with a greedy, quota-based selection that spreads them
+   over matches and mixes difficulty, outcome and "pro != best".
+5. moments.json, previews/*.png and a printed summary are written.
+
+The scoring and difficulty functions are deliberately at the top of the file so
+they are easy to tweak.
+"""
+
+import argparse
+import json
+import math
+import os
+import random
+import re
+import sys
+from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
+from glob import glob
+
+import numpy as np
+
+PITCH_X, PITCH_Y = 105.0, 68.0
+FPS_RAW = 25          # DFL tracking frame rate
+FPS_OUT = 10          # frame rate written to moments.json
+
+# ----------------------------------------------------------------------------
+# Moment rules
+# ----------------------------------------------------------------------------
+MAX_HOLD_S = 3.0          # B must release pass 2 within this many seconds of receiving
+MAX_PASS1_S = 4.0         # pass 1 longer than this (kick -> reception) is ignored
+TOUCH_M = 1.5             # ball within this distance (2D) of a player = "at his feet"
+DEF_THIRD_X = PITCH_X / 3 # B receiving at x < this (after normalisation) = own defensive third
+AFTER_RECEPTION_S = 0.5   # frames written after reception
+LEAD_IN_S = 2.0           # frames written before the pass 1 kick (build-up; game scan time)
+MIN_PASS2_M = 8.0         # pass 2 shorter than this is not an interesting decision
+
+# Selection
+MAX_PER_MATCH = 6
+NOTBEST_SHARE = 0.30      # share of selected moments where the pro's pass != best option
+FAILED_SHARE = 0.20       # share of selected moments where pass 2 failed
+
+# "Pressure" preference used during selection
+PREF_TEAMMATES_RADIUS_M = 35.0
+PREF_MIN_TEAMMATES = 3
+PREF_PRESSURE_RADIUS_M = 8.0
+
+
+# ----------------------------------------------------------------------------
+# Option value: tweak here
+# ----------------------------------------------------------------------------
+VALUE_PARAMS = dict(
+    w_lane=0.30,             # weight of an open passing lane
+    w_progress=0.50,         # weight of moving the ball towards the opponent goal
+    w_space=0.20,            # weight of the receiver having time/space
+    lane_full_m=5.0,         # lane_open >= this counts as a fully open lane
+    lane_block_m=2.0,        # lane_open below this scales the WHOLE score down linearly
+                             #   (a defender standing on the line kills the option)
+    space_full_m=6.0,        # receiver_space >= this counts as fully free
+    progress_min_m=-10.0,    # progress <= this scores 0 (clear backward pass)
+    progress_max_m=25.0,     # progress >= this scores 1
+    long_pass_from_m=25.0,   # passes longer than this are penalised...
+    long_pass_pts_per_m=0.5, # ...by this many points per extra metre...
+    long_pass_max_pts=15.0,  # ...up to this maximum
+)
+
+
+def _clip01(v):
+    return max(0.0, min(1.0, v))
+
+
+def option_value(dist, lane_open, progress, receiver_space, p=VALUE_PARAMS):
+    """Score one passing option on 0-100 (higher = better).
+
+        lane     = clip(lane_open      / lane_full_m)
+        space    = clip(receiver_space / space_full_m)
+        prog     = clip((progress - progress_min_m) / (progress_max_m - progress_min_m))
+        base     = 100 * (w_lane*lane + w_progress*prog + w_space*space)
+        blocked  = clip(lane_open / lane_block_m)          # 0 = defender on the line
+        penalty  = min(long_pass_max_pts, long_pass_pts_per_m * max(0, dist - long_pass_from_m))
+        value    = clip(base * blocked - penalty, 0, 100)
+    """
+    lane = _clip01(lane_open / p['lane_full_m'])
+    space = _clip01(receiver_space / p['space_full_m'])
+    prog = _clip01((progress - p['progress_min_m']) / (p['progress_max_m'] - p['progress_min_m']))
+    base = 100.0 * (p['w_lane'] * lane + p['w_progress'] * prog + p['w_space'] * space)
+    blocked = _clip01(lane_open / p['lane_block_m'])
+    penalty = min(p['long_pass_max_pts'], p['long_pass_pts_per_m'] * max(0.0, dist - p['long_pass_from_m']))
+    return max(0.0, min(100.0, base * blocked - penalty))
+
+
+DIRECTION_MIN_M = 3.0         # |progress| below this is always 'sideways'
+FORWARD_OPEN_LANE_M = 2.0     # a forward option with lane_open >= this counts as "open"
+
+
+def pass_direction(dist, progress):
+    """'forward' | 'sideways' | 'backward', by the angle to the opponent goal line.
+
+    forward  = progress >= DIRECTION_MIN_M and within 60° of straight ahead (progress >= dist/2)
+    backward = progress <= -DIRECTION_MIN_M and within 60° of straight back
+    sideways = everything else
+    """
+    if progress >= DIRECTION_MIN_M and progress >= dist / 2:
+        return 'forward'
+    if progress <= -DIRECTION_MIN_M and -progress >= dist / 2:
+        return 'backward'
+    return 'sideways'
+
+
+def apply_forward_first(options):
+    """Forward-first rule: a backward pass may only be the best option when every
+    forward lane is blocked.  If any forward option has lane_open >= FORWARD_OPEN_LANE_M,
+    each backward option's value is capped 1 point below the best such forward option.
+    """
+    open_fwd = [o['value'] for o in options
+                if o['direction'] == 'forward' and o['lane_open'] >= FORWARD_OPEN_LANE_M]
+    if not open_fwd:
+        return
+    cap = max(0.0, max(open_fwd) - 1.0)
+    for o in options:
+        if o['direction'] == 'backward' and o['value'] > cap:
+            o['value'] = round(cap, 1)
+
+
+def difficulty(option_values, pressure_m):
+    """'easy' | 'medium' | 'hard'.
+
+    n_close  = options whose value is within 10 points of the best (best included)
+    points   = min(n_close - 1, 2)                 # 0: one obvious option ... 2: 3+ options
+             + (2 if pressure_m < 2.5 else 1 if pressure_m < 5 else 0)
+    easy     = one obvious option and points <= 1
+    hard     = points >= 3
+    medium   = everything else
+    """
+    best = max(option_values)
+    n_close = sum(1 for v in option_values if v >= best - 10)
+    pts = min(n_close - 1, 2) + (2 if pressure_m < 2.5 else 1 if pressure_m < 5 else 0)
+    if n_close == 1 and pts <= 1:
+        return 'easy', n_close
+    if pts >= 3:
+        return 'hard', n_close
+    return 'medium', n_close
+
+
+def lane_open_m(src, dst, defenders):
+    """Minimum distance from any defender to the pass segment src->dst.
+
+    Defenders *behind* the passer (projection onto the pass direction < 0) are
+    ignored: they cannot intercept a ball travelling away from them, and otherwise
+    a single presser next to B would make every lane look closed.
+    """
+    d = dst - src
+    L2 = float(d @ d)
+    if L2 < 1e-6 or len(defenders) == 0:
+        return 30.0
+    t = (defenders - src) @ d / L2
+    ahead = t >= 0
+    if not ahead.any():
+        return 30.0
+    t = np.clip(t[ahead], 0.0, 1.0)
+    proj = src + t[:, None] * d
+    return float(min(30.0, np.min(np.linalg.norm(defenders[ahead] - proj, axis=1))))
+
+
+# ----------------------------------------------------------------------------
+# Data discovery and loading
+# ----------------------------------------------------------------------------
+class Match:
+    def __init__(self, key, info, events, positions):
+        self.key = key                       # e.g. DFL-COM-000001_DFL-MAT-J03WMX
+        self.match_id = key.split('_')[-1]   # e.g. DFL-MAT-J03WMX
+        self.info, self.events, self.positions = info, events, positions
+
+
+def discover_matches(data_dir):
+    """Match files by their shared DFL-COM-..._DFL-MAT-... suffix."""
+    matches = []
+    for info in sorted(glob(os.path.join(data_dir, '*matchinformation*.xml'))):
+        key = re.search(r'matchinformation_(.+)\.xml$', os.path.basename(info)).group(1)
+        ev = glob(os.path.join(data_dir, f'*events_raw_{key}.xml'))
+        pos = glob(os.path.join(data_dir, f'*positions_raw_observed_{key}.xml'))
+        if not ev or not pos:
+            print(f'  ! {key}: missing events or positions file, skipped')
+            continue
+        matches.append(Match(key, info, ev[0], pos[0]))
+    return matches
+
+
+def section_clock(pos_path):
+    """{period: (N, unix_time)} for one frame of each half, read from the raw XML.
+
+    kloppy keeps frame numbers but not the absolute wall-clock time of tracking
+    frames; we need it to align tracking with the (absolute) event timestamps.
+    Frames are exactly 1/25 s apart within a half, so one (N, T) pair per half is enough.
+    """
+    want = {b'firstHalf': 1, b'secondHalf': 2}
+    out, section = {}, None
+    with open(pos_path, 'rb') as fh:
+        for line in fh:
+            line = line.lstrip()
+            if line.startswith(b'<FrameSet'):
+                section = re.search(rb'GameSection="(\w+)"', line).group(1)
+            elif section is not None and line.startswith(b'<Frame '):
+                per = want.get(section)
+                if per and per not in out:
+                    n = int(re.search(rb' N="(\d+)"', line).group(1))
+                    t = re.search(rb' T="([^"]+)"', line).group(1).decode()
+                    out[per] = (n, datetime.fromisoformat(t).timestamp())
+                section = None
+                if len(out) == len(want):
+                    break
+    return out
+
+
+def parse_tracking(match, cache_dir):
+    """Load tracking with kloppy and convert it to numpy arrays (cached as .npz).
+
+    Coordinates: kloppy's 'sportec' system is metres, origin at the centre spot,
+    y pointing up.  We shift to origin bottom-left (x 0-105, y 0-68).
+    """
+    cache = os.path.join(cache_dir, f'{match.match_id}.npz')
+    if os.path.exists(cache):
+        return cache
+    from kloppy import sportec
+    from kloppy.domain import BallState
+
+    tr = sportec.load_tracking(meta_data=match.info, raw_data=match.positions, coordinates='sportec')
+    players = [p for team in tr.metadata.teams for p in team.players]
+    col = {p.player_id: i for i, p in enumerate(players)}
+    by_period = defaultdict(list)
+    for fr in tr.frames:
+        by_period[fr.period.id].append(fr)
+
+    arrays = {}
+    for per, frs in by_period.items():
+        n0 = min(f.frame_id for f in frs)
+        n = max(f.frame_id for f in frs) - n0 + 1
+        ball = np.full((n, 3), np.nan, np.float32)
+        alive = np.zeros(n, bool)
+        xy = np.full((n, len(players), 2), np.nan, np.float32)
+        for f in frs:
+            i = f.frame_id - n0
+            b = f.ball_coordinates
+            if b is not None and b.x is not None:
+                ball[i] = (b.x + PITCH_X / 2, b.y + PITCH_Y / 2, b.z or 0.0)
+            alive[i] = f.ball_state == BallState.ALIVE
+            for pl, pd in f.players_data.items():
+                c = pd.coordinates
+                if c is not None and pl.player_id in col:
+                    xy[i, col[pl.player_id]] = (c.x + PITCH_X / 2, c.y + PITCH_Y / 2)
+        arrays[f'p{per}_n0'] = np.array(n0)
+        arrays[f'p{per}_ball'] = ball
+        arrays[f'p{per}_alive'] = alive
+        arrays[f'p{per}_xy'] = xy
+
+    clock = section_clock(match.positions)
+    meta = dict(
+        player_ids=[p.player_id for p in players],
+        team_ids=[p.team.team_id for p in players],
+        jerseys=[int(p.jersey_no) if p.jersey_no is not None else -1 for p in players],
+        periods=sorted(by_period),
+        clock={str(k): v for k, v in clock.items()},
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    tmp = cache + '.tmp.npz'
+    np.savez_compressed(tmp, meta=np.array(json.dumps(meta)), **arrays)
+    os.replace(tmp, cache)
+    return cache
+
+
+class Tracking:
+    """Per-period numpy arrays for one match."""
+
+    def __init__(self, path):
+        z = np.load(path)
+        meta = json.loads(str(z['meta']))
+        self.pids = meta['player_ids']
+        self.teams = np.array(meta['team_ids'])
+        self.jerseys = meta['jerseys']
+        self.col = {p: i for i, p in enumerate(self.pids)}
+        self.clock = {int(k): tuple(v) for k, v in meta['clock'].items()}
+        self.n0, self.ball, self.alive, self.xy = {}, {}, {}, {}
+        for per in meta['periods']:
+            self.n0[per] = int(z[f'p{per}_n0'])
+            self.ball[per] = z[f'p{per}_ball']
+            self.alive[per] = z[f'p{per}_alive']
+            self.xy[per] = z[f'p{per}_xy']
+
+    def index_at(self, per, unix_t):
+        """Array index of the tracking frame at absolute time unix_t."""
+        n_ref, t_ref = self.clock[per]
+        return int(round((n_ref - self.n0[per]) + (unix_t - t_ref) * FPS_RAW))
+
+    def attack_sign(self, per, team_id):
+        """+1 if team attacks left->right (towards x=105) in this period, else -1.
+
+        Measured at kick-off of the period: every player is in his own half.
+        """
+        alive = np.flatnonzero(self.alive[per])
+        k = alive[0] if len(alive) else 0
+        xs = self.xy[per][k:k + 10, self.teams == team_id, 0]
+        return 1 if np.nanmean(xs) < PITCH_X / 2 else -1
+
+
+def load_events(match):
+    """kloppy events, without DFL 'Delete' placeholder events, sorted by time."""
+    from kloppy import sportec
+    ds = sportec.load_event(event_data=match.events, meta_data=match.info, coordinates='sportec')
+    start = {p.id: p.start_timestamp.timestamp() for p in ds.metadata.periods}
+    evs = [e for e in ds.events if e.event_name != 'Delete']
+    evs.sort(key=lambda e: (e.period.id, e.timestamp))
+    teams = {t.team_id: t for t in ds.metadata.teams}
+    # Kick-off events carry TeamLeft: used only to sanity-check attack direction
+    team_left = {}
+    for e in evs:
+        raw = getattr(e, 'raw_event', None) or {}
+        if 'TeamLeft' in raw and e.period.id not in team_left:
+            team_left[e.period.id] = raw['TeamLeft']
+    return evs, start, teams, team_left
+
+
+# ----------------------------------------------------------------------------
+# Candidate extraction
+# ----------------------------------------------------------------------------
+# Events that may sit between pass 1 and pass 2 without breaking the sequence
+IGNORABLE = {'TacklingGame', 'VideoAssistantAction', 'PlayerNotSentOff', 'PenaltyNotAwarded',
+             'SpectacularPlay', 'Run', 'OtherPlayerAction'}
+
+
+def is_open_play_pass(e):
+    if e.event_name != 'pass':
+        return False
+    raw = getattr(e, 'raw_event', None) or {}
+    if raw.get('FromOpenPlay') != 'true':
+        return False
+    return not any(type(q).__name__ == 'SetPieceQualifier' for q in (e.qualifiers or []))
+
+
+def pass_pairs(evs, skips):
+    """Yield (pass1, pass2) event pairs: A -> B completed, then B's next action is a pass."""
+    for i, e in enumerate(evs):
+        if e.event_name != 'pass' or e.result is None or e.result.name != 'COMPLETE' \
+                or e.receiver_player is None or e.player is None:
+            continue
+        B = e.receiver_player.player_id
+        if not is_open_play_pass(e):
+            skips['pass 1 not open play (set piece / restart)'] += 1
+            continue
+        nxt = None
+        for f in evs[i + 1:]:
+            if f.period.id != e.period.id:
+                break
+            if f.event_name in IGNORABLE:
+                continue
+            if f.event_name == 'OtherBallAction' and f.player and f.player.player_id == B:
+                continue
+            nxt = f
+            break
+        if nxt is None or nxt.event_name != 'pass' or nxt.player is None \
+                or nxt.player.player_id != B:
+            skips["receiver's next action is not a pass"] += 1
+            continue
+        if not is_open_play_pass(nxt):
+            skips['pass 2 not open play (set piece / restart)'] += 1
+            continue
+        yield e, nxt
+
+
+def estimate_offsets(tr, evs, ev_start, max_shift_s=5.0):
+    """Per-period clock offset (in frames) between event times and tracking.
+
+    DFL event timestamps are hand-logged: they carry a per-match/per-half offset of up
+    to ~2 s plus noise.  We pick the shift that maximises the number of pass events
+    whose passer has the ball at his feet (< TOUCH_M) at event time + shift.
+    """
+    r = int(max_shift_s * FPS_RAW)
+    out = {}
+    for per in tr.xy:
+        score = np.zeros(2 * r + 1)
+        for e in evs:
+            if e.period.id != per or e.event_name != 'pass' or e.player is None \
+                    or e.player.player_id not in tr.col:
+                continue
+            i = tr.index_at(per, ev_start[per] + e.timestamp.total_seconds())
+            if i - r < 0 or i + r >= len(tr.ball[per]):
+                continue
+            d = np.linalg.norm(tr.ball[per][i - r:i + r + 1, :2] - tr.xy[per][i - r:i + r + 1, tr.col[e.player.player_id]], axis=1)
+            score += d < TOUCH_M
+        out[per] = int(np.argmax(score)) - r
+    return out
+
+
+def first_true(mask):
+    idx = np.flatnonzero(mask)
+    return int(idx[0]) if len(idx) else None
+
+
+def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
+    """Align a pass pair with tracking, validate it and compute all moment fields.
+
+    Returns a dict, or None (reason counted in `skips`)."""
+    per = p1.period.id
+    if per not in tr.xy:
+        skips['no tracking for period'] += 1
+        return None
+    ball, alive, xy = tr.ball[per], tr.alive[per], tr.xy[per]
+    n = len(ball)
+    A, B = p1.player.player_id, p1.receiver_player.player_id
+    team = p1.team.team_id
+    if A not in tr.col or B not in tr.col:
+        skips['player missing in tracking'] += 1
+        return None
+    ca, cb = tr.col[A], tr.col[B]
+    i1 = tr.index_at(per, ev_start[per] + p1.timestamp.total_seconds()) + offsets[per]
+    i2 = tr.index_at(per, ev_start[per] + p2.timestamp.total_seconds()) + offsets[per]
+    win = int(1.5 * FPS_RAW)    # remaining event-time noise after the offset correction
+    if i1 - win < 0 or i2 + 150 >= n:
+        skips['missing tracking frames'] += 1
+        return None
+
+    def dist_to(col, lo, hi):
+        return np.linalg.norm(ball[lo:hi, :2] - xy[lo:hi, col], axis=1)
+
+    # --- kick of pass 1: the ball-at-A's-feet frame nearest the (corrected) event time
+    #     within +-1.5 s, then forward to the last frame the ball is still at his feet
+    lo = i1 - win
+    dA = dist_to(ca, lo, i1 + win + 1)
+    touch = np.flatnonzero(dA < TOUCH_M)
+    if len(touch) == 0:
+        skips['tracking: ball not at passer at pass 1'] += 1
+        return None
+    k = int(touch[np.argmin(np.abs(touch - win))])
+    while k + 1 < len(dA) and dA[k + 1] < TOUCH_M:
+        k += 1
+    kick1 = lo + k
+
+    # --- reception by B: first frame after kick 1 the ball is at B's feet
+    hi = min(n, i2 + int(1.5 * FPS_RAW))
+    dB = dist_to(cb, kick1 + 1, hi)
+    r = first_true(dB < TOUCH_M)
+    if r is None:
+        if len(dB) == 0 or np.all(np.isnan(dB)) or np.nanmin(dB) > 2.5:
+            skips['tracking: ball never reaches B'] += 1
+            return None
+        r = int(np.nanargmin(dB))
+    rec = kick1 + 1 + r
+    if (rec - kick1) / FPS_RAW > MAX_PASS1_S:
+        skips['pass 1 too long (> 4 s in the air)'] += 1
+        return None
+
+    # --- kick of pass 2: ball leaves B (> 3 m) for good; last frame still at his feet
+    dB2 = dist_to(cb, rec, hi)
+    leave = first_true(dB2 > 3.0)
+    if leave is None:
+        skips['B held/dribbled > 3 s'] += 1
+        return None
+    at_feet = np.flatnonzero(dB2[:leave] <= TOUCH_M)
+    kick2 = rec + int(at_feet[-1] if len(at_feet) else 0)
+    hold = (kick2 - rec) / FPS_RAW
+    if hold > MAX_HOLD_S:
+        skips['B held/dribbled > 3 s'] += 1
+        return None
+    if abs(kick2 - i2) > 1.5 * FPS_RAW:
+        skips['event/tracking mismatch at pass 2'] += 1
+        return None
+
+    # --- ball in play and complete tracking from pass 1 to reception + 0.5 s (+ B's touch)
+    w_end = max(kick2, rec + int(AFTER_RECEPTION_S * FPS_RAW)) + 1
+    if not alive[kick1:w_end].all():
+        skips['ball out of play during moment'] += 1
+        return None
+    present = ~np.isnan(xy[rec, :, 0])
+    span = xy[kick1:w_end + 1][:, present, 0]
+    if np.isnan(span).any() or np.isnan(ball[kick1:w_end + 1]).any():
+        skips['missing tracking frames'] += 1
+        return None
+    att_cols = np.flatnonzero(present & (tr.teams == team))
+    def_cols = np.flatnonzero(present & (tr.teams != team))
+    if len(att_cols) < 9 or len(def_cols) < 9:
+        skips['missing tracking frames'] += 1
+        return None
+
+    # --- normalise direction: attacking team always attacks left -> right
+    sign = tr.attack_sign(per, team)
+
+    def norm(p):
+        p = np.asarray(p, dtype=float)
+        return p if sign == 1 else np.array([PITCH_X, PITCH_Y]) - p
+
+    b_pos = norm(xy[rec, cb])
+    if b_pos[0] < DEF_THIRD_X:
+        skips["B in own defensive third"] += 1
+        return None
+
+    # --- end of pass 2 (from tracking): first contact by any other player, or ball dead
+    others = np.array([c for c in np.flatnonzero(present) if c != cb])
+    seg = slice(kick2 + 2, min(n, kick2 + 5 * FPS_RAW))
+    d_oth = np.linalg.norm(xy[seg][:, others] - ball[seg, None, :2], axis=2)
+    low = ball[seg, 2] < 2.5
+    end_k, end_col = None, None
+    for j in range(d_oth.shape[0]):
+        if not alive[seg.start + j]:
+            end_k = seg.start + j
+            break
+        if low[j] and np.nanmin(d_oth[j]) < 1.2:
+            end_k, end_col = seg.start + j, int(others[np.nanargmin(d_oth[j])])
+            break
+    if end_k is None:
+        end_k = seg.stop - 1
+    success = p2.result is not None and p2.result.name == 'COMPLETE'
+    target = p2.receiver_player.player_id if (success and p2.receiver_player) else None
+    if success:
+        if target not in tr.col or not present[tr.col[target]] or tr.teams[tr.col[target]] != team:
+            skips['pass 2 receiver missing in tracking'] += 1
+            return None
+        ct = tr.col[target]
+        dT = np.linalg.norm(ball[seg, :2] - xy[seg, ct], axis=1)
+        a = first_true(dT < TOUCH_M)
+        if a is not None:
+            end_k = seg.start + a
+    end_pos = norm(ball[end_k, :2])
+    if np.isnan(end_pos).any():
+        skips['missing tracking frames'] += 1
+        return None
+
+    # --- options at the reception frame (the frozen decision moment)
+    att = {c: norm(xy[rec, c]) for c in att_cols}
+    defs = np.array([norm(xy[rec, c]) for c in def_cols])
+    pressure = float(np.min(np.linalg.norm(defs - b_pos, axis=1)))
+
+    def pid_of(c):
+        return ('A' if tr.teams[c] == team else 'D') + str(tr.jerseys[c])
+
+    options = []
+    for c, p in att.items():
+        if c == cb:
+            continue
+        dist = float(np.linalg.norm(p - b_pos))
+        lane = lane_open_m(b_pos, p, defs)
+        prog = float(p[0] - b_pos[0])
+        space = float(np.min(np.linalg.norm(defs - p, axis=1)))
+        options.append(dict(pid=pid_of(c), num=tr.jerseys[c], dist=round(dist, 1),
+                            lane_open=round(lane, 1), progress=round(prog, 1),
+                            receiver_space=round(space, 1),
+                            direction=pass_direction(dist, prog),
+                            value=round(option_value(dist, lane, prog, space), 1)))
+    apply_forward_first(options)
+    options.sort(key=lambda o: -o['value'])
+    best_pid = options[0]['pid']
+    diff, n_close = difficulty([o['value'] for o in options], pressure)
+    mates_35 = sum(1 for o in options if o['dist'] <= PREF_TEAMMATES_RADIUS_M)
+
+    # --- which teammate was the pass meant for?  (= receiver if successful; for failed
+    #     passes: the teammate closest to the ball's line of travel, if any)
+    start = norm(ball[kick2, :2])
+    intended_pos = None
+    if target is not None:
+        intended = pid_of(tr.col[target])
+    else:
+        far = norm(ball[min(kick2 + 8, end_k), :2])
+        direction = end_pos - start if np.linalg.norm(end_pos - start) > 3 else far - start
+        intended = None
+        if np.linalg.norm(direction) > 0.5:
+            u = direction / np.linalg.norm(direction)
+            best_perp = None
+            for c in att_cols:
+                if c == cb:
+                    continue
+                v = norm(xy[kick2, c]) - start
+                proj = float(v @ u)
+                perp = abs(float(v[0] * u[1] - v[1] * u[0]))
+                if proj > 3 and perp < max(4.0, 0.25 * proj) and (best_perp is None or perp < best_perp):
+                    intended, best_perp, intended_pos = pid_of(c), perp, v + start
+
+    # --- pass 2 length: ball travel for completed passes; for failed passes the
+    #     distance to the intended teammate (an early interception shortens the travel)
+    length = float(np.linalg.norm(end_pos - start))
+    if intended_pos is not None:
+        length = max(length, float(np.linalg.norm(intended_pos - start)))
+    if length < MIN_PASS2_M:
+        skips['pass 2 shorter than 8 m'] += 1
+        return None
+
+    # --- lead-in before pass 1 (gives the game time to scan): extend back up to
+    #     LEAD_IN_S while the ball is in play and everyone on the pitch is tracked
+    lead = kick1
+    while lead > max(0, kick1 - int(LEAD_IN_S * FPS_RAW)) and alive[lead - 1] \
+            and not np.isnan(ball[lead - 1]).any() and not np.isnan(xy[lead - 1][present]).any():
+        lead -= 1
+
+    # --- frames at 10 fps, aligned so the reception lands exactly on a frame
+    step = FPS_RAW / FPS_OUT
+    n_before = int((rec - lead) // step)
+    pass1_idx = n_before - int((rec - kick1) // step)
+    n_after = int(round(AFTER_RECEPTION_S * FPS_OUT))
+    fidx = [rec - step * j for j in range(n_before, 0, -1)] + [rec + step * j for j in range(0, n_after + 1)]
+    cols = list(att_cols) + list(def_cols)
+
+    def interp(arr, f):
+        lo_ = int(math.floor(f))
+        w = f - lo_
+        return arr[lo_] * (1 - w) + arr[min(lo_ + 1, len(arr) - 1)] * w
+
+    frames = []
+    for j, f in enumerate(fidx):
+        bp = norm(interp(ball[:, :2], f))
+        pl = []
+        for c in cols:
+            p = norm(interp(xy[:, c], f))
+            pl.append(dict(pid=pid_of(c), num=tr.jerseys[c], team='att' if tr.teams[c] == team else 'def',
+                           x=round(float(p[0]), 1), y=round(float(p[1]), 1)))
+        frames.append(dict(t=round(j / FPS_OUT, 1), ball=dict(x=round(float(bp[0]), 1), y=round(float(bp[1]), 1)),
+                           players=pl))
+
+    secs = int(p1.timestamp.total_seconds()) + (45 * 60 if per == 2 else 0)
+    return dict(
+        match_id=m.match_id, period=per, clock=f'{secs // 60:02d}:{secs % 60:02d}',
+        frames=frames, you_pid=pid_of(cb), passer_pid=pid_of(ca),
+        pass1_frame_index=pass1_idx, reception_frame_index=n_before,
+        options=options, best_option_pid=best_pid,
+        actual=dict(target_pid=pid_of(tr.col[target]) if target else None,
+                    intended_pid=intended,
+                    end=dict(x=round(float(end_pos[0]), 1), y=round(float(end_pos[1]), 1)),
+                    length=round(length, 1), success=bool(success)),
+        pro_was_best=(intended == best_pid),
+        difficulty=diff, n_close_options=n_close,
+        pressure_m=round(pressure, 1), hold_s=round(hold, 2), teammates_within_35m=mates_35,
+        # private fields (stripped before writing)
+        _pressured=(mates_35 >= PREF_MIN_TEAMMATES and pressure <= PREF_PRESSURE_RADIUS_M),
+        _t=p1.timestamp.total_seconds() + per * 10000,
+        _sync=(kick1 - i1, kick2 - i2),
+    )
+
+
+# ----------------------------------------------------------------------------
+# Selection
+# ----------------------------------------------------------------------------
+def select(cands, matches, n, seed):
+    """Greedy, quota-based pick of n moments:
+    - spread over matches (n // n_matches each; leftovers to the matches with most
+      candidates; never more than MAX_PER_MATCH from one match)
+    - hard quotas: NOTBEST_SHARE pro != best, FAILED_SHARE failed passes
+    - soft: prefer pressured moments (>= 3 teammates within 35 m, a defender within 8 m),
+      ~1/3 each difficulty, best-option direction mix like the candidate pool
+    - no two moments from the same match within 20 s of each other
+    """
+    rng = random.Random(seed)
+    by_match = defaultdict(list)
+    for c in cands:
+        by_match[c['match_id']].append(c)
+    mids = [m.match_id for m in matches if by_match[m.match_id]]
+    order = sorted(mids, key=lambda k: -len(by_match[k]))
+    quota = {k: min(MAX_PER_MATCH, n // len(mids) + (1 if i < n % len(mids) else 0))
+             for i, k in enumerate(order)}
+
+    tgt_diff = {'easy': n / 3, 'medium': n / 3, 'hard': n / 3}
+    # best-option direction should mirror the candidate pool (otherwise the pro = best
+    # quota drags in mostly sideways-best moments, because pros often play it safe)
+    pool_dirs = Counter(c['options'][0]['direction'] for c in cands)
+    tgt_dir = {d: n * v / len(cands) for d, v in pool_dirs.items()}
+    tgt_notbest = round(NOTBEST_SHARE * n)
+    tgt_failed = round(FAILED_SHARE * n)
+    pool = list(cands)
+    rng.shuffle(pool)
+    chosen, cnt_m, cnt_d, cnt_dir = [], Counter(), Counter(), Counter()
+    notbest = failed = 0
+    while len(chosen) < n and pool:
+        k = len(chosen)
+        # failed passes are scarce and almost always "pro != best", so their quota is
+        # filled first; otherwise the other quotas crowd them out
+        want_failed = failed < tgt_failed
+        best, best_s = None, -1
+        for c in pool:
+            if cnt_m[c['match_id']] >= quota[c['match_id']]:
+                continue
+            if c['actual']['success'] == want_failed:
+                continue
+            # hard quota: exactly tgt_notbest moments with pro != best
+            if (notbest >= tgt_notbest) if not c['pro_was_best'] else ((k - notbest) >= n - tgt_notbest):
+                continue
+            if any(o['match_id'] == c['match_id'] and abs(o['_t'] - c['_t']) < 20 for o in chosen):
+                continue
+            s = 2.0 * (cnt_d[c['difficulty']] < tgt_diff[c['difficulty']])
+            s += 2.0 * (cnt_dir[c['options'][0]['direction']] < tgt_dir[c['options'][0]['direction']])
+            s += 3.0 * c['_pressured']
+            s += 0.5 * rng.random()
+            if s > best_s:
+                best, best_s = c, s
+        if best is None:
+            break
+        pool.remove(best)
+        chosen.append(best)
+        cnt_m[best['match_id']] += 1
+        cnt_d[best['difficulty']] += 1
+        cnt_dir[best['options'][0]['direction']] += 1
+        notbest += not best['pro_was_best']
+        failed += not best['actual']['success']
+    chosen.sort(key=lambda c: (mids.index(c['match_id']), c['_t']))
+    for i, c in enumerate(chosen, 1):
+        c['id'] = f'm{i:02d}'
+    return chosen
+
+
+# ----------------------------------------------------------------------------
+# QA and previews
+# ----------------------------------------------------------------------------
+def qa(mom):
+    """Return a list of problems found in a finished moment."""
+    probs = []
+    rf = mom['frames'][mom['reception_frame_index']]
+    you = next(p for p in rf['players'] if p['pid'] == mom['you_pid'])
+    d = math.hypot(you['x'] - rf['ball']['x'], you['y'] - rf['ball']['y'])
+    if d > 2.0:
+        probs.append(f'ball {d:.1f} m from B at reception')
+    for f in mom['frames']:
+        for p in f['players'] + [dict(f['ball'], pid='ball')]:
+            if not (-3 <= p['x'] <= PITCH_X + 3 and -3 <= p['y'] <= PITCH_Y + 3):
+                probs.append(f"{p['pid']} off pitch at t={f['t']} ({p['x']}, {p['y']})")
+    # attacking direction: attackers' deepest player (their GK) must be left of
+    # the defenders' deepest player (their GK)
+    att_min = min(p['x'] for p in rf['players'] if p['team'] == 'att')
+    def_max = max(p['x'] for p in rf['players'] if p['team'] == 'def')
+    if not att_min < PITCH_X / 2 < def_max:
+        probs.append(f'attacking direction looks wrong (att min x {att_min}, def max x {def_max})')
+    if you['x'] < DEF_THIRD_X:
+        probs.append('B in own defensive third')
+    return sorted(set(probs))
+
+
+def draw_preview(mom, path):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Arc, Circle, Rectangle
+
+    fig, ax = plt.subplots(figsize=(10.5, 7.4))
+    ax.set_facecolor('#3a7d44')
+    lc = dict(color='white', lw=1.4, alpha=0.85)
+    ax.add_patch(Rectangle((0, 0), PITCH_X, PITCH_Y, fill=False, **lc))
+    ax.plot([PITCH_X / 2] * 2, [0, PITCH_Y], **lc)
+    ax.add_patch(Circle((PITCH_X / 2, PITCH_Y / 2), 9.15, fill=False, **lc))
+    for x0, s in ((0, 1), (PITCH_X, -1)):
+        ax.add_patch(Rectangle((x0, PITCH_Y / 2 - 20.16), s * 16.5, 40.32, fill=False, **lc))
+        ax.add_patch(Rectangle((x0, PITCH_Y / 2 - 9.16), s * 5.5, 18.32, fill=False, **lc))
+        ax.add_patch(Rectangle((x0, PITCH_Y / 2 - 3.66), -s * 1.5, 7.32, fill=False, **lc))
+        ax.add_patch(Arc((x0 + s * 11, PITCH_Y / 2), 18.3, 18.3, theta1=-53 if s == 1 else 127,
+                         theta2=53 if s == 1 else 233, **lc))
+
+    rf = mom['frames'][mom['reception_frame_index']]
+    # ball path of pass 1
+    p1 = slice(mom['pass1_frame_index'], mom['reception_frame_index'] + 1)
+    bx = [f['ball']['x'] for f in mom['frames'][p1]]
+    by = [f['ball']['y'] for f in mom['frames'][p1]]
+    ax.plot(bx, by, color='white', lw=1, ls=':', alpha=0.8, zorder=2)
+    for p in rf['players']:
+        is_you = p['pid'] == mom['you_pid']
+        col = '#1f6fd1' if p['team'] == 'att' else '#d63a2f'
+        ax.add_patch(Circle((p['x'], p['y']), 1.25, color=col, ec='white', lw=1, zorder=4))
+        if is_you:
+            ax.add_patch(Circle((p['x'], p['y']), 2.4, fill=False, ec='#ffd400', lw=2.5, zorder=5))
+        ax.text(p['x'], p['y'], str(p['num']), color='white', ha='center', va='center',
+                fontsize=6.5, weight='bold', zorder=6)
+    ax.add_patch(Circle((rf['ball']['x'], rf['ball']['y']), 0.7, color='white', ec='black', lw=0.8, zorder=7))
+
+    you = next(p for p in rf['players'] if p['pid'] == mom['you_pid'])
+    best = next(p for p in rf['players'] if p['pid'] == mom['best_option_pid'])
+    end = mom['actual']['end']
+    ax.annotate('', xy=(end['x'], end['y']), xytext=(you['x'], you['y']), zorder=8,
+                arrowprops=dict(arrowstyle='-|>', color='#ffd400', lw=2.2))
+    ax.annotate('', xy=(best['x'], best['y']), xytext=(you['x'], you['y']), zorder=8,
+                arrowprops=dict(arrowstyle='-|>', color='black', lw=1.8, ls='--'))
+
+    ax.set_xlim(-3, PITCH_X + 3)
+    ax.set_ylim(-3, PITCH_Y + 3)
+    ax.set_aspect('equal')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    verdict = 'pro = best' if mom['pro_was_best'] else 'pro ≠ best'
+    outcome = 'completed' if mom['actual']['success'] else 'FAILED'
+    ax.set_title(f"{mom['id']}  ·  {mom['difficulty']}  ·  {verdict}", fontsize=13, weight='bold')
+    bo = next(o for o in mom['options'] if o['pid'] == mom['best_option_pid'])
+    ax.text(0, -2.4, f"{mom['match_id']}  P{mom['period']} {mom['clock']}  ·  you = #{you['num']}  ·  "
+                     f"pressure {mom['pressure_m']} m  ·  actual pass {outcome}  ·  best #{best['num']} "
+                     f"(value {bo['value']})   →  attacking", fontsize=8, color='white', va='center')
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[Line2D([], [], color='#ffd400', lw=2.2, label='actual pass'),
+                       Line2D([], [], color='black', lw=1.8, ls='--', label='best option'),
+                       Line2D([], [], marker='o', ls='', color='#1f6fd1', label='attacking'),
+                       Line2D([], [], marker='o', ls='', color='#d63a2f', label='defending')],
+              loc='upper left', fontsize=7, framealpha=0.8, ncol=4)
+    fig.tight_layout()
+    fig.savefig(path, dpi=90)
+    plt.close(fig)
+
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+LICENCE = ('Contains data from the Deutsche Fußball Liga (DFL), published as open data by '
+           'Bassek, M. et al. (2025), Scientific Data, doi:10.1038/s41597-025-04505-y. '
+           'Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). '
+           'Player identities removed; coordinates transformed (attack normalised left to right).')
+
+
+def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    default_data = next((d for d in (os.path.join(here, 'data'), os.path.join(here, 'RawData', '28196177'))
+                         if glob(os.path.join(d, '*matchinformation*.xml'))), os.path.join(here, 'data'))
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('--data', default=default_data)
+    ap.add_argument('--out', default=os.path.join(here, 'moments.json'))
+    ap.add_argument('--previews', default=os.path.join(here, 'previews'))
+    ap.add_argument('--cache', default=os.path.join(here, 'cache'))
+    ap.add_argument('--n', type=int, default=30)
+    ap.add_argument('--seed', type=int, default=7)
+    ap.add_argument('--workers', type=int, default=2)
+    args = ap.parse_args()
+
+    matches = discover_matches(args.data)
+    if not matches:
+        sys.exit(f'No DFL match files found in {args.data}')
+    print(f'Found {len(matches)} matches in {args.data}')
+
+    # 1. tracking -> cached numpy arrays (slow the first time)
+    todo = [m for m in matches if not os.path.exists(os.path.join(args.cache, f'{m.match_id}.npz'))]
+    if todo:
+        print(f'Parsing tracking for {len(todo)} match(es) with kloppy (~1-2 min each)...')
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as ex:
+            for m, _ in zip(todo, ex.map(parse_tracking, todo, [args.cache] * len(todo))):
+                print(f'  parsed {m.match_id}')
+
+    # 2-3. candidates
+    cands, skips, sync = [], Counter(), []
+    per_match_cands = Counter()
+    for m in matches:
+        tr = Tracking(os.path.join(args.cache, f'{m.match_id}.npz'))
+        evs, ev_start, teams, team_left = load_events(m)
+        for per, tl in team_left.items():
+            if per in tr.xy and tr.attack_sign(per, tl) != 1:
+                print(f'  ! {m.match_id} P{per}: tracking direction disagrees with kick-off TeamLeft')
+        offsets = estimate_offsets(tr, evs, ev_start)
+        for p1, p2 in pass_pairs(evs, skips):
+            c = build_candidate(m, tr, p1, p2, ev_start, offsets, skips)
+            if c is not None:
+                cands.append(c)
+                per_match_cands[m.match_id] += 1
+                sync.append(c['_sync'])
+        print(f'  {m.match_id}: {per_match_cands[m.match_id]} valid candidate moments '
+              f'(event clock offset ' + ', '.join(f'P{p} {o / FPS_RAW:+.2f}s' for p, o in sorted(offsets.items())) + ')')
+    if not cands:
+        sys.exit('No valid moments found.')
+    s1 = np.abs([s[0] for s in sync]) / FPS_RAW
+    s2 = np.abs([s[1] for s in sync]) / FPS_RAW
+    print(f'Event->tracking sync correction: median {np.median(s1):.2f}s (pass 1), '
+          f'{np.median(s2):.2f}s (pass 2)')
+
+    # 4. selection + QA (a moment failing QA is replaced by re-running the selection without it)
+    rejected = {}
+    while True:
+        chosen = select([c for c in cands if id(c) not in rejected], matches, args.n, args.seed)
+        bad = {id(c): qa(c) for c in chosen}
+        bad = {k: v for k, v in bad.items() if v}
+        if not bad:
+            break
+        for c in chosen:
+            if id(c) in bad:
+                rejected[id(c)] = (f"{c['match_id']} P{c['period']} {c['clock']}", bad[id(c)])
+
+    # 5. outputs
+    os.makedirs(args.previews, exist_ok=True)
+    for f in glob(os.path.join(args.previews, 'm*.png')):
+        os.remove(f)
+    out_moments = []
+    for c in chosen:
+        draw_preview(c, os.path.join(args.previews, f"{c['id']}.png"))
+        mom = {k: v for k, v in c.items() if not k.startswith('_')}
+        out_moments.append(dict(id=mom.pop('id'), **mom))
+    doc = dict(
+        meta=dict(
+            source='DFL/IDSSE open dataset: 7 Bundesliga matches 2022/23, tracking (25 fps) + event data '
+                   '(Figshare item 28196177)',
+            licence=LICENCE,
+            pitch=[PITCH_X, PITCH_Y], fps=FPS_OUT,
+            coordinates='metres, origin bottom-left, x 0-105, y 0-68; attacking team always attacks left to right',
+            pids='A<jersey> = attacking team, D<jersey> = defending team (anonymous, per moment)',
+            value_formula=option_value.__doc__.strip(),
+            value_params=VALUE_PARAMS,
+            forward_first_rule=apply_forward_first.__doc__.strip(),
+            direction_rule=pass_direction.__doc__.strip(),
+            difficulty_rule=difficulty.__doc__.strip(),
+            lane_open_rule=lane_open_m.__doc__.strip(),
+            notes='actual.intended_pid = receiver for completed passes; for failed passes the teammate closest '
+                  'to the ball line (or null). pro_was_best compares intended_pid with best_option_pid. '
+                  'Options are measured at reception_frame_index. Frames start up to 2 s before the '
+                  'pass 1 kick (pass1_frame_index) and end 0.5 s after reception.',
+        ),
+        moments=out_moments,
+    )
+    with open(args.out, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh, ensure_ascii=False, separators=(',', ':'))
+    size = os.path.getsize(args.out)
+    with open(args.out, encoding='utf-8') as fh:   # read back to confirm it is valid
+        n_written = len(json.load(fh)['moments'])
+
+    # summary
+    print('\n================ SUMMARY ================')
+    print(f'Wrote {args.out}: {n_written} moments, {size:,} bytes ({size / 1e6:.2f} MB), '
+          f're-read OK; previews -> {args.previews}')
+    print('Moments per match:')
+    mc = Counter(m['match_id'] for m in out_moments)
+    for m in matches:
+        print(f'  {m.match_id}: {mc[m.match_id]:2d}  (from {per_match_cands[m.match_id]} candidates)')
+    dc = Counter(m['difficulty'] for m in out_moments)
+    print('Difficulty: ' + ', '.join(f'{k} {dc[k]}' for k in ('easy', 'medium', 'hard')))
+    nb = sum(not m['pro_was_best'] for m in out_moments)
+    fl = sum(not m['actual']['success'] for m in out_moments)
+    pr = sum(c['_pressured'] for c in chosen)
+    print(f'Pro != best: {nb}/{len(out_moments)} ({100 * nb / len(out_moments):.0f} %)')
+    print(f'Failed passes: {fl}/{len(out_moments)}   Pressured (pref. filter): {pr}/{len(out_moments)}')
+    print('Best-option direction:')
+    for label, pool in (('all candidates', cands), ('selected', out_moments)):
+        dirs = Counter(c['options'][0]['direction'] for c in pool)
+        print(f'  {label:15s} ' + '  '.join(f'{k} {dirs[k]} ({100 * dirs[k] / len(pool):.0f} %)'
+                                            for k in ('forward', 'sideways', 'backward')))
+    back = [c for c in cands if c['options'][0]['direction'] == 'backward']
+    blocked = sum(all(o['lane_open'] < FORWARD_OPEN_LANE_M for o in c['options'] if o['direction'] == 'forward')
+                  for c in back)
+    print(f'  backward-best moments with every forward lane < {FORWARD_OPEN_LANE_M:g} m: {blocked}/{len(back)}')
+    print(f'Candidate pass pairs skipped ({sum(skips.values())}):')
+    for k, v in skips.most_common():
+        print(f'  {v:5d}  {k}')
+    if rejected:
+        print('Selected moments rejected by QA and replaced:')
+        for desc, probs in rejected.values():
+            print(f'  {desc}: {"; ".join(probs)}')
+    else:
+        print('QA: all selected moments passed (ball at B on reception, players on pitch, direction).')
+
+
+if __name__ == '__main__':
+    main()
