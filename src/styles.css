@@ -1426,11 +1426,19 @@ button {
 .player-card::after {
   content: '';
   position: absolute;
+  z-index: 0;
   inset: 0;
   background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.35) 45%, transparent 60%);
   transform: translateX(-100%);
   animation: shine 3.2s ease-in-out 0.6s infinite;
   pointer-events: none;
+}
+
+/* the shine passes under the numbers, so none of them ever looks washed out (Memory, mid-card,
+   was under it most) */
+.player-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .player-card.silver {
@@ -1628,6 +1636,12 @@ button {
 .level-line {
   color: var(--accent);
   font-size: 0.9rem;
+}
+
+.level-line small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
 }
 
 .share {

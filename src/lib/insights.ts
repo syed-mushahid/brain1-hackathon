@@ -1,4 +1,4 @@
-import type { Profile, RoundRecord } from './profile'
+import { RATING_MIN_ROUNDS, type Profile, type RoundRecord } from './profile'
 import { dayKey, daysBetween } from './util'
 
 // One-line insights from the saved history (home screen). Presentation only: they read the
@@ -56,4 +56,54 @@ export function homeInsight(p: Profile, today = dayKey()): Insight | null {
   if (rest.reduce((s, x) => s + x.v, 0) / rest.length - low.v >= WEAK_GAP)
     return { text: `Your weak spot: ${WEAK_SPOT[low.k]}`, tone: 'neutral' }
   return null
+}
+
+// ---------------------------------------------------------------- after a session (summary screen)
+/** What the summary needs from each round of the session. */
+export interface SessionRound {
+  scores: Pick<RoundRecord, Skill>
+  /** a risky pass: high risk, or cut out / lost */
+  risky: boolean
+  /** you found the best option (or one as good) */
+  best: boolean
+  /** scan timing: 'fresh' = looked in the last moments before the ball, 'early', 'none' */
+  look: 'fresh' | 'early' | 'none'
+}
+
+/** a session change smaller than this (points) against your rating is "steady" */
+const SESSION_MIN = 4
+
+/** "Decision ▼8: you chose risky passes today"; without a rating yet, today's strongest skill. */
+export function sessionInsight(rounds: SessionRound[], before: Pick<RoundRecord, Skill> & { rounds: number }): Insight | null {
+  if (!rounds.length) return null
+  const today = SKILLS.map((k) => ({ k, v: skillAvg(rounds.map((r) => r.scores), k) })).filter(
+    (x): x is { k: Skill; v: number } => x.v !== null,
+  )
+  if (before.rounds < RATING_MIN_ROUNDS) {
+    const top = [...today].sort((a, b) => b.v - a.v)[0]
+    return top ? { text: `Strongest today: ${SKILL_NAME[top.k]} ${Math.round(top.v)}`, tone: 'neutral' } : null
+  }
+  const moves = today.map(({ k, v }) => ({ k, d: Math.round(v - (before[k] ?? 50)) })).sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
+  const top = moves[0]
+  if (!top || Math.abs(top.d) < SESSION_MIN) return { text: 'Steady session: all three skills close to your rating', tone: 'neutral' }
+  const n = rounds.length
+  const count = (f: (r: SessionRound) => boolean) => rounds.filter(f).length
+  const up = top.d > 0
+  let why: string
+  if (top.k === 'decision')
+    why = up
+      ? `you found the best option ${count((r) => r.best)} of ${n} times`
+      : count((r) => r.risky) >= 2
+        ? 'you chose risky passes today'
+        : 'the best option slipped past you more often'
+  else if (top.k === 'scan')
+    why = up
+      ? count((r) => r.look === 'fresh') >= n / 2
+        ? 'you checked your shoulder later and better'
+        : 'you spotted the best option more often'
+      : count((r) => r.look === 'none') >= 2
+        ? `you didn't look around in ${count((r) => r.look === 'none')} rounds`
+        : 'look again just before the ball arrives'
+  else why = up ? 'your taps landed closer to where teammates really were' : 'your taps were further from where teammates really stood'
+  return { text: `${SKILL_NAME[top.k]} ${up ? '▲' : '▼'}${Math.abs(top.d)}: ${why}`, tone: up ? 'up' : 'down' }
 }
