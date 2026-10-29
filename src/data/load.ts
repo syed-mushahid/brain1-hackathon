@@ -27,6 +27,8 @@ export function prepareMoment(raw: unknown, source: string): Moment | null {
 async function fetchJson(url: string): Promise<unknown> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  // static hosts often answer a missing file with the app's index.html (200)
+  if (r.headers.get('content-type')?.includes('text/html')) throw new Error('not found')
   return r.json()
 }
 
