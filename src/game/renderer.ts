@@ -165,14 +165,17 @@ export class PitchRenderer {
   /**
    * Camera for the reveal: fit the box [u0,v0]-[u1,v1] (metres) into the visible part of
    * the canvas (css px, from the top down to `visibleH`), zooming between minK and maxK.
+   * The box is centred, then the pitch is kept filling the frame: centred when it is smaller than
+   * the frame, otherwise never leaving an empty band at an edge (the box still fits: k fits it).
    */
-  fitView(u0: number, v0: number, u1: number, v1: number, visibleH: number, minK = 0.6, maxK = 1.6): View {
+  fitView(u0: number, v0: number, u1: number, v1: number, visibleH: number, minK = 0.4, maxK = 1.6): View {
     const bw = Math.max(1, (u1 - u0) * this.s)
     const bh = Math.max(1, (v1 - v0) * this.s)
     const k = Math.max(minK, Math.min(maxK, this.w / bw, visibleH / bh))
     const cx = (this.X(u0) + this.X(u1)) / 2
     const cy = (this.Y(v0) + this.Y(v1)) / 2
-    return { k, tx: this.w / 2 - k * cx, ty: visibleH / 2 - k * cy }
+    const place = (t: number, len: number, frame: number) => (len <= frame ? (frame - len) / 2 : Math.max(frame - len, Math.min(0, t)))
+    return { k, tx: place(this.w / 2 - k * cx, k * this.w, this.w), ty: place(visibleH / 2 - k * cy, k * this.h, visibleH) }
   }
 
   draw(sc: Scene): void {

@@ -2,9 +2,13 @@ import type { ReactNode } from 'react'
 
 // Feedback texts name players as "#25" (your teammate) and "red #24" (an opponent).
 // <Rich> shows those as the same number circles as on the pitch.
-const PLAYER = /(?<![A-Za-z])(?:([Rr])ed )?#(\d+)/g
+export const PLAYER = /(?<![A-Za-z])(?:([Rr])ed )?#(\d+)/g
 
-export function Rich({ text }: { text: string }) {
+/** One apostrophe style everywhere: the curly ’ (and a stray ´) read as an accent in some fonts. */
+export const tidy = (text: string) => text.replace(/[’´]/g, "'")
+
+export function Rich({ text: raw }: { text: string }) {
+  const text = tidy(raw)
   const out: ReactNode[] = []
   let last = 0
   for (const m of text.matchAll(PLAYER)) {

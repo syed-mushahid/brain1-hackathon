@@ -3,7 +3,7 @@ import { RoundControls } from '../game/Round'
 import type { RoundResult } from '../game/evaluate'
 import { BreakdownPanel, type Tab } from './Breakdown'
 import { Rich } from './Rich'
-import { WEIGHTS } from '../game/scoring'
+import { scoreTone, WEIGHTS } from '../game/scoring'
 import { loadReplay3D } from '../three/lazy'
 
 /** Animate a number from `from` to `to` (ease-out), starting after `delay` ms. */
@@ -26,7 +26,7 @@ export function useCountUp(to: number, duration = 900, delay = 0, from = 0): num
 function Bar({ label, weight, value, delay }: { label: string; weight: number; value: number | null; delay: number }) {
   const v = useCountUp(value ?? 0, 800, delay)
   return (
-    <div className="bar-row">
+    <div className={`bar-row ${value === null ? '' : scoreTone(value)}`}>
       <span className="bar-label">
         {label} <small>{value === null ? 'n/a' : `${Math.round(weight * 100)}%`}</small>
       </span>
@@ -58,19 +58,43 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D }: SheetProps
   const brain = useCountUp(scores.brain, 1200, 650)
   const [collapsed, setCollapsed] = useState(false)
   const [tab, setTab] = useState<Tab | null>(null)
-  const [watchOpen, setWatchOpen] = useState(false)
+  // replays play on the pitch (2D) unless the 3D switch is on (TV camera)
+  const [in3D, setIn3D] = useState(false)
+  const [playing, setPlaying] = useState<'pro' | 'you' | null>(null)
   // your pass can be simulated when you made one (a timeout has nothing to show)
   const canSimulate = !!result.tap
-  const [who, setWho] = useState<'pro' | 'you'>(canSimulate ? 'you' : 'pro')
   const ctl = useContext(RoundControls)
   // fold the sheet away while the 2D replay runs on the pitch, then put it back as it was
   const before = useRef<boolean | null>(null)
   useEffect(() => {
-    if (!ctl.replaying && before.current !== null) {
+    if (ctl.replaying) return
+    setPlaying(null)
+    if (before.current !== null) {
       setCollapsed(before.current)
       before.current = null
     }
   }, [ctl.replaying])
+  const play = (who: 'pro' | 'you') => {
+    if (ctl.replaying) {
+      ctl.stopReplay()
+      if (playing === who) return // the same button again = stop
+    }
+    if (in3D && onWatch3D) return onWatch3D('tv', who)
+    if (before.current === null) before.current = collapsed
+    setCollapsed(true)
+    setPlaying(who)
+    ctl.replay2D(who)
+  }
+  // the legend lists only what this reveal draws (renderer.ts drawReveal)
+  const r = result
+  const drawn = {
+    you: !!r.tap,
+    run: !!(r.run || r.space?.team || (r.best.alone && r.best.run) || r.brave?.run),
+    steal: r.run?.team === 'def' || r.space?.team === 'def',
+    danger: r.threats.length > 0,
+    brave: !!r.brave,
+    lofted: (!!r.tap && r.lofted) || r.proLofted || (r.best.alone && r.best.lofted) || !!r.brave?.lofted,
+  }
   const R = 34
   const circ = 2 * Math.PI * R
   return (
@@ -132,65 +156,52 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D }: SheetProps
         </div>
       )}
       <div className="legend">
-        <span className="lg mine">You</span>
+        {drawn.you && <span className="lg mine">You</span>}
         <span className="lg pro">Pro</span>
         <span className="lg best">Best</span>
-        {(result.run || result.space?.team) && <span className="lg run">Run</span>}
-        {(result.run?.team === 'def' || result.space?.team === 'def') && <span className="lg run def">Steal</span>}
-        {result.threats.length > 0 && <span className="lg danger">Danger</span>}
-        {result.brave && <span className="lg brave">Brave</span>}
-        {(result.lofted || result.proLofted || result.best.lofted || result.brave?.lofted) && <span className="lg loft">Lofted</span>}
+        {drawn.run && <span className="lg run">Run</span>}
+        {drawn.steal && <span className="lg run def">Steal</span>}
+        {drawn.danger && <span className="lg danger">Danger</span>}
+        {drawn.brave && <span className="lg brave">Brave</span>}
+        {drawn.lofted && <span className="lg loft">Lofted</span>}
       </div>
-      {watchOpen && (
-        <div className="watch-menu" aria-label="Watch the play">
-          {/* whose pass: the pro's real one, or yours (simulated with the race model) */}
-          <div className="watch-who" role="radiogroup" aria-label="Whose pass">
-            {(['you', 'pro'] as const).map((w) => (
-              <button
-                key={w}
-                role="radio"
-                aria-checked={who === w}
-                className={who === w ? 'on' : ''}
-                disabled={w === 'you' && !canSimulate}
-                onClick={() => setWho(w)}
-              >
-                {w === 'you' ? 'Your pass' : 'Pro’s pass'}
-              </button>
-            ))}
-          </div>
+      <div className="replay-row">
+        <div className="replay-you">
           <button
+            className={`replay-btn ${playing === 'you' ? 'on' : ''}`}
+            disabled={!canSimulate}
+            onClick={() => play('you')}
+            title={canSimulate ? undefined : 'You did not pass'}
+          >
+            {playing === 'you' ? '■ Stop' : '▶ Your pass'}
+          </button>
+          {canSimulate && (
+            <small className="replay-note" title="Your pass is simulated with the race model; the other players move as they really did.">
+              simulated
+            </small>
+          )}
+        </div>
+        <button className={`replay-btn ${playing === 'pro' ? 'on' : ''}`} onClick={() => play('pro')}>
+          {playing === 'pro' ? '■ Stop' : "▶ Pro's pass"}
+        </button>
+        {onWatch3D && (
+          <button
+            className={`toggle-3d ${in3D ? 'on' : ''}`}
+            role="switch"
+            aria-checked={in3D}
+            aria-label="Replay in 3D (TV camera)"
             onClick={() => {
-              setWatchOpen(false)
-              before.current = collapsed
-              setCollapsed(true)
-              ctl.replay2D(who)
+              if (!in3D) void loadReplay3D() // start fetching the 3D chunk early
+              setIn3D((v) => !v)
             }}
           >
-            <b>2D</b>
-            <span>on the pitch</span>
+            3D
           </button>
-          {onWatch3D && (
-            <button onClick={() => (setWatchOpen(false), onWatch3D('tv', who))}>
-              <b>3D</b>
-              <span>TV camera</span>
-            </button>
-          )}
-          {who === 'you' && <small className="watch-note">Your pass is simulated with the race model; the other players move as they really did.</small>}
-        </div>
-      )}
-      <div className="row">
-        <button
-          className={`cta ghost watch3d ${watchOpen ? 'on' : ''}`}
-          onPointerDown={() => void loadReplay3D()} // start fetching the 3D chunk a little earlier
-          onClick={() => (ctl.replaying ? ctl.stopReplay() : setWatchOpen((o) => !o))}
-          aria-expanded={watchOpen}
-        >
-          {ctl.replaying ? '■ Stop replay' : '▶ Watch the play'}
-        </button>
-        <button className="cta" onClick={onNext}>
-          {nextLabel}
-        </button>
+        )}
       </div>
+      <button className="cta next-btn" onClick={onNext}>
+        {nextLabel}
+      </button>
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { buildTrack, FPS, posAt, sample, type Track } from './track'
 import { MODEL } from './model.config'
 import { loadPlay, withPlay } from '../lib/plays'
 import { buildUserPlay, proStory, storyCaption, type PlayStory } from './userPlay'
-import { Rich } from '../components/Rich'
+import { PLAYER, Rich } from '../components/Rich'
 import { PitchRenderer, type RevealDraw, type Scene, type View } from './renderer'
 import { evaluate, type RoundResult } from './evaluate'
 import { coneVis, dirTo, HEAD_TURN, turnTowards, type ScanRecord } from './vision'
@@ -162,7 +162,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       stopLook()
       sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
       const res = evaluate(track, { tap, scans: g.scans, lofted })
-      g.top = res.mentioned
+      g.top = involved(track, res)
       g.reveal = {
         progress: 0,
         tap: res.tap,
@@ -201,27 +201,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       return Math.max(120, Math.min(r.h, sheetTop - canvas.getBoundingClientRect().top - 6))
     }
     /** The box that matters at the reveal, fitted into the canvas area not covered by the sheet. */
-    const revealView = (R: RevealDraw): View => {
-      const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), R.proEnd]
-      if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, ...(R.best.alone ? (R.best.run ?? []) : []))
-      if (R.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
-      if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
-      if (R.tap) pts.push(R.tap)
-      if (R.run) pts.push(...R.run.pts)
-      if (R.space) pts.push(R.space.end, ...(R.space.run?.pts ?? []))
-      const us = pts.map((p) => p[0])
-      const vs = pts.map((p) => p[1])
-      const visibleH = visibleHeight()
-      return withPan(
-        r.fitView(
-          Math.min(...us) - FRAME_MARGIN_M,
-          Math.min(...vs) - FRAME_MARGIN_M,
-          Math.max(...us) + FRAME_MARGIN_M,
-          Math.max(...vs) + FRAME_MARGIN_M,
-          visibleH,
-        ),
-      )
-    }
+    const revealView = (R: RevealDraw): View => withPan(r.fitView(...revealBox(track, R, g.top), visibleHeight()))
     /** the automatic framing moved by the player's drag */
     const withPan = (v: View): View => ({ k: v.k, tx: v.tx + g.pan.x, ty: v.ty + g.pan.y })
     const bestInCone = (dir: number) =>
@@ -619,6 +599,46 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       )}
     </div>
   )
+}
+
+/** The box the reveal camera frames (u0, v0, u1, v1 in metres): every arrow and run, and every
+ *  player the reveal is about (`top`), with room around them. */
+export function revealBox(track: Track, R: RevealDraw, top: number[]): [number, number, number, number] {
+  const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), R.proEnd]
+  for (const i of top) pts.push(posAt(track, track.rec, i))
+  for (const t of R.threats) pts.push(t.from, t.at)
+  if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, ...(R.best.alone ? (R.best.run ?? []) : []))
+  if (R.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
+  if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
+  if (R.tap) pts.push(R.tap)
+  if (R.run) pts.push(...R.run.pts)
+  if (R.space) pts.push(R.space.end, ...(R.space.run?.pts ?? []))
+  const us = pts.map((p) => p[0])
+  const vs = pts.map((p) => p[1])
+  const M = FRAME_MARGIN_M
+  return [Math.min(...us) - M, Math.min(...vs) - M, Math.max(...us) + M, Math.max(...vs) + M]
+}
+
+/** Everyone the reveal is about: the result's own list plus every player its texts name ("#25",
+ *  "red #24"), so they are all drawn on top, never nudged, and framed by the reveal camera. */
+export function involved(tr: Track, res: RoundResult): number[] {
+  const b = res.breakdown
+  const texts = [
+    res.headline,
+    res.detail,
+    b.why.title,
+    ...b.why.points,
+    ...b.why.cols.flatMap((c) => [c.label, c.risk ? c.risk.text.replace(/\(#/, '(red #') : '']), // as Breakdown shows them
+    ...b.scan.lines,
+  ]
+  const out = [...res.mentioned]
+  for (const t of texts)
+    for (const m of t.matchAll(PLAYER)) {
+      const att = !m[1]
+      const i = tr.nums.findIndex((n, k) => n === Number(m[2]) && tr.att[k] === att)
+      if (i >= 0 && !out.includes(i)) out.push(i)
+    }
+  return out
 }
 
 /** "You are <player> · <team> · <minute>" on the intro screen */
