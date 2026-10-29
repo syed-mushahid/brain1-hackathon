@@ -58,8 +58,16 @@ export const MODEL = {
     bias: 1.1,
     /** margin used when no opponent can get near the pass at all (P ~ 1) */
     noOpponentS: 3,
-    /** static blockers: an opponent within reach of the path gets at most this margin (s); null = off [CAL: every value fitted worse] */
-    blockerSlack: null as number | null,
+    /**
+     * A defender standing in the lane (at the reception within race.reach of the ball's path, where
+     * the ball can be reached and short of the receiver) gets at most this margin (s), whatever his
+     * reaction time, so the pass doesn't arrive through him: -1.5 s -> P = 31 %. [GAME] rule: on the
+     * 991 real passes every blocker margin cost a little log-loss ([CAL]: none 0.299, -1 s 0.307,
+     * -3 s 0.331) - 73 % of real passes with an opponent within 0.5 m of the path still arrived,
+     * because real defenders often face the wrong way - but the game must never show a pass rolling
+     * through a defender. Must stay below -passModel.bias (P < 50 %). null = rule off.
+     */
+    blockerSlack: -1.5 as number | null,
   },
 
   /** Expected value of a pass (value.ts):
@@ -84,8 +92,9 @@ export const MODEL = {
     runConeDeg: 60 as number | null,
     /** m/s: faster than this counts as running */
     runSpeedMin: 2,
-    /** spots searched around every onside teammate: rings (m) x directions */
-    ringsM: [4, 8, 12],
+    /** spots searched around every onside teammate: rings (m) x directions. Every spot must be further than
+     *  taps.snapM from all teammates (a tap there is a pass to feet), so the first ring is just beyond it */
+    ringsM: [6, 9, 12],
     dirs: 8,
     /** two passes are the same when they reach the same player within this distance (m)... */
     samePassM: 5,

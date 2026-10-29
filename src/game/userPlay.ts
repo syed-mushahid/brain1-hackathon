@@ -64,7 +64,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   const L = Math.hypot(end[0] - you[0], end[1] - you[1])
   const ux = (end[0] - you[0]) / Math.max(L, 1e-6)
   const uy = (end[1] - you[1]) / Math.max(L, 1e-6)
-  const F = flight(L, L > RACE.loftFrom) // same flight as the race (lofted beyond 30 m)
+  const F = flight(L, sp ? sp.lofted : L > RACE.loftFrom) // the flight the race used (lofted beyond race.loftFrom)
   const tBall = F.arrive
   const out = taker < 0
   const total = (out ? tBall + 1 : Math.max(tWin, tBall) + AFTER_S) * FPS

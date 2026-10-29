@@ -3,26 +3,29 @@
 extract_moments.py
 ==================
 
-Builds `moments.json` (+ one preview PNG per moment) for the football decision
-game from the DFL / IDSSE open dataset (7 Bundesliga matches 2022/23, tracking
-at 25 fps + events, CC-BY 4.0; Bassek et al. 2025, Scientific Data,
-doi:10.1038/s41597-025-04505-y).
+Builds drop-in moment files for the football decision game from the DFL / IDSSE open dataset
+(7 Bundesliga matches 2022/23, tracking at 25 fps + events, CC-BY 4.0; Bassek et al. 2025,
+Scientific Data, doi:10.1038/s41597-025-04505-y).
 
 A "moment" is two consecutive open-play passes by the same team:
     pass 1: A -> B            (the incoming ball)
     pass 2: B -> ?            (made <= 3 s after B receives; the decision we test)
 
-Run (one command):
+Run (needs node + `npm install` for the game's checker):
     pip install kloppy matplotlib numpy
-    python extract_moments.py                    # data in ./RawData/28196177 (or ./data)
+    python extract_moments.py --n 30          # data in ./RawData/28196177 (or ./data)
 
 Useful options:
+    --out DIR         where <id>.json + <id>.play.json go (default public/moments, the app itself,
+                      whose manifest is then refreshed); moments already there are never re-picked
+    --clean           delete the moment files in --out first (regenerate everything)
+    --n 30            number of moments to add
+    --seed 7          selection seed (selection is deterministic for a given seed)
     --data DIR        folder with the DFL XML files (matchinformation / events_raw /
                       positions_raw_observed per match)
-    --n 30            number of moments to keep
-    --seed 7          selection seed (selection is deterministic for a given seed)
     --workers 2       parallel processes for parsing the (400 MB) tracking files
     --cache DIR       where parsed tracking arrays are cached (.npz); delete to re-parse
+    --rejected DIR    candidates that failed the game's checks, with the reason (default rejected/)
 
 Pipeline
 --------
@@ -31,14 +34,16 @@ Pipeline
 2. Candidate pass pairs come from the event feed.  The event clock and the
    tracking clock are aligned via absolute UTC timestamps, and then the exact kick /
    reception frames are refined from the tracking itself (ball-to-player distance).
-3. Each valid candidate gets its options scored (see `option_value`) and a
-   difficulty (see `difficulty`).
-4. ~30 moments are picked with a greedy, quota-based selection that spreads them
-   over matches and mixes difficulty, outcome and "pro != best".
-5. moments.json, previews/*.png and a printed summary are written.
+3. Every candidate becomes a moment file holding raw facts only (the data contract,
+   src/data/moment.schema.json): frames, the real pass and its outcome, context, names.
+4. Candidates are checked in batches by the GAME's own code (scripts/check_moments.ts, run
+   with node): validation, the race / expected-value model, simulated taps and its assertions.
+   Failures go to rejected/ with the reason. Checking continues until the passing ones can fill
+   --n with a balanced difficulty mix (difficulty computed by the game's model), spread over the
+   matches, with some failed passes.
+5. <id>.json + <id>.play.json, previews/<id>.png and a printed summary are written.
 
-The scoring and difficulty functions are deliberately at the top of the file so
-they are easy to tweak.
+Nothing here judges a pass: values, the best option and difficulty all come from the game.
 """
 
 import argparse
@@ -57,7 +62,7 @@ import numpy as np
 
 PITCH_X, PITCH_Y = 105.0, 68.0
 FPS_RAW = 25          # DFL tracking frame rate
-FPS_OUT = 10          # frame rate written to moments.json
+FPS_OUT = 10          # frame rate of the moment files
 SCHEMA_VERSION = 1    # data contract version (src/data/moment.schema.json)
 
 # ----------------------------------------------------------------------------
@@ -74,148 +79,19 @@ TAKEOVER_MAX_S = 8.0      # follow the ball after pass 2 at most this long to fi
 CONTROL_S = 0.5           # ball staying at a player's feet this long = he has it
 TURN_DEG = 25.0           # ...or a touch that turns the ball by more than this
 SPEED_RATIO = 0.6         # ...or slows it to less than this share of its speed (or speeds it up 1/x)
-RUN_FPS = 5               # sampling rate of the taker's run written to moments.json
-PLAY_AFTER_S = 1.5        # plays.json: keep following the play this long after the takeover...
+RUN_FPS = 5               # sampling rate of the taker's run in the moment file
+PLAY_AFTER_S = 1.5        # <id>.play.json: keep following the play this long after the takeover...
 PLAY_MAX_S = 9.0          # ...but at most this long after the reception
 
 # Selection
-MAX_PER_MATCH = 6
-NOTBEST_SHARE = 0.30      # share of selected moments where the pro's pass != best option
 FAILED_SHARE = 0.20       # share of selected moments where pass 2 failed
+MIN_GAP_S = 20.0          # no two moments from the same match within this many seconds
+CHECK_BATCH = 60          # candidates checked by the game per node run
 
 # "Pressure" preference used during selection
 PREF_TEAMMATES_RADIUS_M = 35.0
 PREF_MIN_TEAMMATES = 3
 PREF_PRESSURE_RADIUS_M = 8.0
-
-
-# ----------------------------------------------------------------------------
-# Option value: tweak here
-# ----------------------------------------------------------------------------
-VALUE_PARAMS = dict(
-    w_lane=0.30,             # weight of an open passing lane
-    w_progress=0.50,         # weight of moving the ball towards the opponent goal
-    w_space=0.20,            # weight of the receiver having time/space
-    lane_full_m=5.0,         # lane_open >= this counts as a fully open lane
-    lane_block_m=2.0,        # lane_open below this scales the WHOLE score down linearly
-                             #   (a defender standing on the line kills the option)
-    space_full_m=6.0,        # receiver_space >= this counts as fully free
-    progress_min_m=-10.0,    # progress <= this scores 0 (clear backward pass)
-    progress_max_m=25.0,     # progress >= this scores 1
-    long_pass_from_m=25.0,   # passes longer than this are penalised...
-    long_pass_pts_per_m=0.5, # ...by this many points per extra metre...
-    long_pass_max_pts=15.0,  # ...up to this maximum
-)
-
-
-def _clip01(v):
-    return max(0.0, min(1.0, v))
-
-
-def option_value(dist, lane_open, progress, receiver_space, p=VALUE_PARAMS):
-    """Score one passing option on 0-100 (higher = better).
-
-        lane     = clip(lane_open      / lane_full_m)
-        space    = clip(receiver_space / space_full_m)
-        prog     = clip((progress - progress_min_m) / (progress_max_m - progress_min_m))
-        base     = 100 * (w_lane*lane + w_progress*prog + w_space*space)
-        blocked  = clip(lane_open / lane_block_m)          # 0 = defender on the line
-        penalty  = min(long_pass_max_pts, long_pass_pts_per_m * max(0, dist - long_pass_from_m))
-        value    = clip(base * blocked - penalty, 0, 100)
-    """
-    lane = _clip01(lane_open / p['lane_full_m'])
-    space = _clip01(receiver_space / p['space_full_m'])
-    prog = _clip01((progress - p['progress_min_m']) / (p['progress_max_m'] - p['progress_min_m']))
-    base = 100.0 * (p['w_lane'] * lane + p['w_progress'] * prog + p['w_space'] * space)
-    blocked = _clip01(lane_open / p['lane_block_m'])
-    penalty = min(p['long_pass_max_pts'], p['long_pass_pts_per_m'] * max(0.0, dist - p['long_pass_from_m']))
-    return max(0.0, min(100.0, base * blocked - penalty))
-
-
-DIRECTION_MIN_M = 3.0         # |progress| below this is always 'sideways'
-FORWARD_OPEN_LANE_M = 2.0     # a forward option with lane_open >= this counts as "open"
-OFFSIDE_TOL_M = 0.5           # tracking noise allowance: offside only if this far beyond the line
-
-
-def offside_line(def_x, ball_x):
-    """x beyond which an attacker is offside (attack -> +x), or None in his own half.
-
-    Law 11: in the opponents' half and nearer to their goal line than both the ball and the
-    second-last opponent.  Judged at the moment you would pass (the reception frame).
-    Returns max(second-last defender x, ball x, halfway line) + OFFSIDE_TOL_M.
-    """
-    second_last = sorted(def_x, reverse=True)[1]
-    return max(second_last, ball_x, PITCH_X / 2) + OFFSIDE_TOL_M
-
-
-def pass_direction(dist, progress):
-    """'forward' | 'sideways' | 'backward', by the angle to the opponent goal line.
-
-    forward  = progress >= DIRECTION_MIN_M and within 60° of straight ahead (progress >= dist/2)
-    backward = progress <= -DIRECTION_MIN_M and within 60° of straight back
-    sideways = everything else
-    """
-    if progress >= DIRECTION_MIN_M and progress >= dist / 2:
-        return 'forward'
-    if progress <= -DIRECTION_MIN_M and -progress >= dist / 2:
-        return 'backward'
-    return 'sideways'
-
-
-def apply_forward_first(options, respect_offside=True):
-    """Forward-first rule: a backward pass may only be the best option when every
-    forward lane is blocked.  If any forward option has lane_open >= FORWARD_OPEN_LANE_M,
-    each backward option's value is capped 1 point below the best such forward option.
-    """
-    open_fwd = [o['value'] for o in options
-                if o['direction'] == 'forward' and o['lane_open'] >= FORWARD_OPEN_LANE_M
-                and not (respect_offside and o['offside'])]
-    if not open_fwd:
-        return
-    cap = max(0.0, max(open_fwd) - 1.0)
-    for o in options:
-        if o['direction'] == 'backward' and o['value'] > cap:
-            o['value'] = round(cap, 1)
-
-
-def difficulty(option_values, pressure_m):
-    """'easy' | 'medium' | 'hard'.
-
-    n_close  = options whose value is within 10 points of the best (best included)
-    points   = min(n_close - 1, 2)                 # 0: one obvious option ... 2: 3+ options
-             + (2 if pressure_m < 2.5 else 1 if pressure_m < 5 else 0)
-    easy     = one obvious option and points <= 1
-    hard     = points >= 3
-    medium   = everything else
-    """
-    best = max(option_values)
-    n_close = sum(1 for v in option_values if v >= best - 10)
-    pts = min(n_close - 1, 2) + (2 if pressure_m < 2.5 else 1 if pressure_m < 5 else 0)
-    if n_close == 1 and pts <= 1:
-        return 'easy', n_close
-    if pts >= 3:
-        return 'hard', n_close
-    return 'medium', n_close
-
-
-def lane_open_m(src, dst, defenders):
-    """Minimum distance from any defender to the pass segment src->dst.
-
-    Defenders *behind* the passer (projection onto the pass direction < 0) are
-    ignored: they cannot intercept a ball travelling away from them, and otherwise
-    a single presser next to B would make every lane look closed.
-    """
-    d = dst - src
-    L2 = float(d @ d)
-    if L2 < 1e-6 or len(defenders) == 0:
-        return 30.0
-    t = (defenders - src) @ d / L2
-    ahead = t >= 0
-    if not ahead.any():
-        return 30.0
-    t = np.clip(t[ahead], 0.0, 1.0)
-    proj = src + t[:, None] * d
-    return float(min(30.0, np.min(np.linalg.norm(defenders[ahead] - proj, axis=1))))
 
 
 # ----------------------------------------------------------------------------
@@ -676,40 +552,14 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
     zs = ball[kick2:take_k + 1, 2]
     max_z = float(np.nanmax(zs)) if np.isfinite(zs).any() else 0.0
 
-    # --- options at the reception frame (the frozen decision moment)
-    att = {c: norm(xy[rec, c]) for c in att_cols}
+    # --- the decision moment (reception frame): only what selection needs as a preference
+    #     (the game computes options, pressure and difficulty itself)
     defs = np.array([norm(xy[rec, c]) for c in def_cols])
     pressure = float(np.min(np.linalg.norm(defs - b_pos, axis=1)))
+    mates_35 = sum(1 for c in att_cols if c != cb and np.linalg.norm(norm(xy[rec, c]) - b_pos) <= PREF_TEAMMATES_RADIUS_M)
 
     def pid_of(c):
         return ('A' if tr.teams[c] == team else 'D') + str(tr.jerseys[c])
-
-    off_x = offside_line(defs[:, 0], float(norm(ball[rec, :2])[0]))
-    options = []
-    for c, p in att.items():
-        if c == cb:
-            continue
-        dist = float(np.linalg.norm(p - b_pos))
-        lane = lane_open_m(b_pos, p, defs)
-        prog = float(p[0] - b_pos[0])
-        space = float(np.min(np.linalg.norm(defs - p, axis=1)))
-        options.append(dict(pid=pid_of(c), num=tr.jerseys[c], dist=round(dist, 1),
-                            lane_open=round(lane, 1), progress=round(prog, 1),
-                            receiver_space=round(space, 1),
-                            direction=pass_direction(dist, prog),
-                            offside=bool(p[0] > off_x),
-                            value=round(option_value(dist, lane, prog, space), 1)))
-    # The moment SELECTION still uses the values from before the offside rule existed (keeps the
-    # 30 selected moments stable); what is written out (_final, below) has offside options at 0.
-    final = [dict(o, value=0.0) if o['offside'] else dict(o) for o in options]
-    apply_forward_first(options, respect_offside=False)
-    options.sort(key=lambda o: -o['value'])
-    best_pid = options[0]['pid']
-    diff, n_close = difficulty([o['value'] for o in options], pressure)
-    apply_forward_first(final)
-    final.sort(key=lambda o: -o['value'])
-    f_diff, f_close = difficulty([o['value'] for o in final], pressure)
-    mates_35 = sum(1 for o in options if o['dist'] <= PREF_TEAMMATES_RADIUS_M)
 
     # --- which teammate was the pass meant for?  (= receiver if successful; for failed
     #     passes: the teammate closest to the ball's line of travel, if any)
@@ -829,9 +679,7 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
                     outcome=outcome, taker=taker,
                     ball_max_z=round(max_z, 1)),
         context=context, names=names,
-        # private fields (stripped before writing). _sel = the old heuristic, used only to select
-        _sel=dict(options=options, best_option_pid=best_pid, pro_was_best=(intended == best_pid),
-                  difficulty=diff, pressure_m=round(pressure, 1)),
+        # private fields (stripped before writing)
         _pressured=(mates_35 >= PREF_MIN_TEAMMATES and pressure <= PREF_PRESSURE_RADIUS_M),
         _t=p1.timestamp.total_seconds() + per * 10000,
         _sync=(kick1 - i1, kick2 - i2),
@@ -843,105 +691,127 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
                     intended=next((k for k, c in enumerate(cols) if pid_of(c) == intended), None)),
         _play=dict(schema_version=SCHEMA_VERSION, id=stable_id, frames=play, kick_index=round((kick2 - rec) / step, 1),
                    take_index=round((take_k - rec) / step, 1)),
-        _final=dict(options=final, best_option_pid=final[0]['pid'], pro_was_best=(intended == final[0]['pid']),
-                    difficulty=f_diff, pressure_m=round(pressure, 1)),
+        _frame=int(tr.n0[per] + rec),
     )
 
 
 # ----------------------------------------------------------------------------
 # Selection
 # ----------------------------------------------------------------------------
-def select(cands, matches, n, seed):
-    """Greedy, quota-based pick of n moments:
-    - spread over matches (n // n_matches each; leftovers to the matches with most
-      candidates; never more than MAX_PER_MATCH from one match)
-    - hard quotas: NOTBEST_SHARE pro != best, FAILED_SHARE failed passes
-    - soft: prefer pressured moments (>= 3 teammates within 35 m, a defender within 8 m),
-      ~1/3 each difficulty, best-option direction mix like the candidate pool
-    - no two moments from the same match within 20 s of each other
+def public(c):
+    """The moment file: the data contract's fields only."""
+    return {k: v for k, v in c.items() if not k.startswith('_')}
+
+
+def too_close(c, others):
+    """Same match and within MIN_GAP_S of one of `others` ((match_id, frame) pairs)."""
+    return any(mid == c['match_id'] and abs(fr - c['_frame']) < MIN_GAP_S * FPS_RAW for mid, fr in others)
+
+
+def check_with_game(here, batch, work_dir):
+    """Write a batch of candidates as moment files and run the game's checker on them.
+    Returns {id: report} (report = ok, problems, difficulty, stats; see scripts/check_moments.ts)."""
+    for f in glob(os.path.join(work_dir, '*.json')):
+        os.remove(f)
+    for c in batch:
+        with open(os.path.join(work_dir, f"{c['id']}.json"), 'w', encoding='utf-8') as fh:
+            json.dump(public(c), fh, ensure_ascii=False, separators=(',', ':'))
+        with open(os.path.join(work_dir, f"{c['id']}.play.json"), 'w', encoding='utf-8') as fh:
+            json.dump(c['_play'], fh, ensure_ascii=False, separators=(',', ':'))
+    res = os.path.join(work_dir, 'result.json.out')
+    run_node(here, 'scripts/check_moments.ts', work_dir, '--json', res, '--quiet', check=False)
+    with open(res, encoding='utf-8') as fh:
+        return {r['id']: r for r in json.load(fh)['moments']}
+
+
+def select(here, cands, matches, n, seed, existing, work_dir, on_reject):
+    """Pick n moments that pass the game's checks, with a balanced difficulty mix.
+
+    Candidates are taken in a seeded random order (pressured ones first: >= 3 teammates within 35 m
+    and a defender within 8 m), checked by the game in batches, and greedily assigned to quotas:
+      - difficulty (the game's model): n / 3 each of easy / medium / hard
+      - matches: spread evenly (n / n_matches each, the rest to the matches with most candidates)
+      - FAILED_SHARE failed passes
+      - never within MIN_GAP_S of another moment of the same match (existing ones included)
+    Checking stops as soon as every quota is filled; if the pool runs out the quotas are relaxed
+    (failed share, then match spread, then difficulty) to still reach n. Returns the chosen
+    candidates with their check reports.
     """
     rng = random.Random(seed)
-    by_match = defaultdict(list)
-    for c in cands:
-        by_match[c['match_id']].append(c)
+    by_match = Counter(c['match_id'] for c in cands)
     mids = [m.match_id for m in matches if by_match[m.match_id]]
-    order = sorted(mids, key=lambda k: -len(by_match[k]))
-    quota = {k: min(MAX_PER_MATCH, n // len(mids) + (1 if i < n % len(mids) else 0))
-             for i, k in enumerate(order)}
+    order = sorted(mids, key=lambda k: -by_match[k])
+    q_match = {k: n // len(mids) + (1 if i < n % len(mids) else 0) for i, k in enumerate(order)}
+    q_diff = {d: n // 3 + (1 if i < n % 3 else 0) for i, d in enumerate(('medium', 'hard', 'easy'))}
+    q_failed = round(FAILED_SHARE * n)
 
-    tgt_diff = {'easy': n / 3, 'medium': n / 3, 'hard': n / 3}
-    # best-option direction should mirror the candidate pool (otherwise the pro = best
-    # quota drags in mostly sideways-best moments, because pros often play it safe)
-    pool_dirs = Counter(c['_sel']['options'][0]['direction'] for c in cands)
-    tgt_dir = {d: n * v / len(cands) for d, v in pool_dirs.items()}
-    tgt_notbest = round(NOTBEST_SHARE * n)
-    tgt_failed = round(FAILED_SHARE * n)
-    pool = list(cands)
+    pool = [c for c in cands if not too_close(c, existing)]
     rng.shuffle(pool)
-    chosen, cnt_m, cnt_d, cnt_dir = [], Counter(), Counter(), Counter()
-    notbest = failed = 0
-    while len(chosen) < n and pool:
-        k = len(chosen)
-        # failed passes are scarce and almost always "pro != best", so their quota is
-        # filled first; otherwise the other quotas crowd them out
-        want_failed = failed < tgt_failed
-        best, best_s = None, -1
-        for c in pool:
-            if cnt_m[c['match_id']] >= quota[c['match_id']]:
+    pool.sort(key=lambda c: not c['_pressured'])          # stable: pressured first, shuffled within
+    chosen, reports = [], {}
+    taken = list(existing)
+    cnt_m, cnt_d = Counter(), Counter()
+    failed = 0
+
+    def fits(c, r, strict):
+        if too_close(c, taken):
+            return False
+        if strict >= 1 and cnt_d[r['difficulty']] >= q_diff[r['difficulty']]:
+            return False
+        if strict >= 2 and cnt_m[c['match_id']] >= q_match[c['match_id']]:
+            return False
+        if strict >= 3:
+            if not c['actual']['success'] and failed >= q_failed:
+                return False   # enough failed passes
+            if c['actual']['success'] and n - len(chosen) <= q_failed - failed:
+                return False   # the remaining places are for the failed passes we still need
+        return True
+
+    def take(c, r):
+        nonlocal failed
+        chosen.append(c)
+        taken.append((c['match_id'], c['_frame']))
+        cnt_m[c['match_id']] += 1
+        cnt_d[r['difficulty']] += 1
+        failed += not c['actual']['success']
+
+    checked = []   # (candidate, report) that passed, not yet chosen
+    i = 0
+    while len(chosen) < n and i < len(pool):
+        batch = pool[i:i + CHECK_BATCH]
+        i += len(batch)
+        got = check_with_game(here, batch, work_dir)
+        for c in batch:
+            r = got.get(c['id'])
+            if r is None or not r['ok']:
+                on_reject(c, r['problems'] if r else ['checker produced no result'])
                 continue
-            if c['actual']['success'] == want_failed:
-                continue
-            # hard quota: exactly tgt_notbest moments with pro != best
-            if (notbest >= tgt_notbest) if not c['_sel']['pro_was_best'] else ((k - notbest) >= n - tgt_notbest):
-                continue
-            if any(o['match_id'] == c['match_id'] and abs(o['_t'] - c['_t']) < 20 for o in chosen):
-                continue
-            s = 2.0 * (cnt_d[c['_sel']['difficulty']] < tgt_diff[c['_sel']['difficulty']])
-            s += 2.0 * (cnt_dir[c['_sel']['options'][0]['direction']] < tgt_dir[c['_sel']['options'][0]['direction']])
-            s += 3.0 * c['_pressured']
-            s += 0.5 * rng.random()
-            if s > best_s:
-                best, best_s = c, s
-        if best is None:
-            break
-        pool.remove(best)
-        chosen.append(best)
-        cnt_m[best['match_id']] += 1
-        cnt_d[best['_sel']['difficulty']] += 1
-        cnt_dir[best['_sel']['options'][0]['direction']] += 1
-        notbest += not best['_sel']['pro_was_best']
-        failed += not best['actual']['success']
+            reports[c['id']] = r
+            checked.append(c)
+        # failed passes first (scarce), then the rest, strictest quotas first
+        for c in sorted(list(checked), key=lambda c: c['actual']['success']):
+            if len(chosen) < n and fits(c, reports[c['id']], 3):
+                take(c, reports[c['id']])
+                checked.remove(c)
+        print(f'  checked {i}/{len(pool)} candidates: {len(reports)} passed, chosen {len(chosen)}/{n} '
+              f'(easy {cnt_d["easy"]}, medium {cnt_d["medium"]}, hard {cnt_d["hard"]})')
+    # pool exhausted: relax the quotas step by step
+    for strict in (2, 1, 0):
+        for c in list(checked):
+            if len(chosen) < n and fits(c, reports[c['id']], strict):
+                take(c, reports[c['id']])
+                checked.remove(c)
+    if len(chosen) < n:
+        print(f'  ! only {len(chosen)} moments pass the checks (asked for {n})')
     chosen.sort(key=lambda c: (mids.index(c['match_id']), c['_t']))
-    return chosen
+    return chosen, reports
 
 
 # ----------------------------------------------------------------------------
 # QA and previews
 # ----------------------------------------------------------------------------
-def qa(mom):
-    """Return a list of problems found in a finished moment."""
-    probs = []
-    rf = mom['frames'][mom['reception_frame_index']]
-    you = next(p for p in rf['players'] if p['pid'] == mom['you_pid'])
-    d = math.hypot(you['x'] - rf['ball']['x'], you['y'] - rf['ball']['y'])
-    if d > 2.0:
-        probs.append(f'ball {d:.1f} m from B at reception')
-    for f in mom['frames']:
-        for p in f['players'] + [dict(f['ball'], pid='ball')]:
-            if not (-3 <= p['x'] <= PITCH_X + 3 and -3 <= p['y'] <= PITCH_Y + 3):
-                probs.append(f"{p['pid']} off pitch at t={f['t']} ({p['x']}, {p['y']})")
-    # attacking direction: attackers' deepest player (their GK) must be left of
-    # the defenders' deepest player (their GK)
-    att_min = min(p['x'] for p in rf['players'] if p['team'] == 'att')
-    def_max = max(p['x'] for p in rf['players'] if p['team'] == 'def')
-    if not att_min < PITCH_X / 2 < def_max:
-        probs.append(f'attacking direction looks wrong (att min x {att_min}, def max x {def_max})')
-    if you['x'] < DEF_THIRD_X:
-        probs.append('B in own defensive third')
-    return sorted(set(probs))
-
-
-def draw_preview(mom, path):
+def draw_preview(mom, rep, path):
+    """Reception frame with the pro's pass (yellow), the game's best option (dashed) and the taker's run."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -977,11 +847,11 @@ def draw_preview(mom, path):
     ax.add_patch(Circle((rf['ball']['x'], rf['ball']['y']), 0.7, color='white', ec='black', lw=0.8, zorder=7))
 
     you = next(p for p in rf['players'] if p['pid'] == mom['you_pid'])
-    best = next(p for p in rf['players'] if p['pid'] == mom['best_option_pid'])
+    best = rep['stats']['best']
     end = mom['actual']['end']
     ax.annotate('', xy=(end['x'], end['y']), xytext=(you['x'], you['y']), zorder=8,
                 arrowprops=dict(arrowstyle='-|>', color='#ffd400', lw=2.2))
-    ax.annotate('', xy=(best['x'], best['y']), xytext=(you['x'], you['y']), zorder=8,
+    ax.annotate('', xy=(best['end']['x'], best['end']['y']), xytext=(you['x'], you['y']), zorder=8,
                 arrowprops=dict(arrowstyle='-|>', color='black', lw=1.8, ls='--'))
     tk = mom['actual']['taker']
     if tk and len(tk['run']) > 1:
@@ -995,16 +865,16 @@ def draw_preview(mom, path):
     ax.set_aspect('equal')
     ax.set_xticks([])
     ax.set_yticks([])
-    verdict = 'pro = best' if mom['pro_was_best'] else 'pro ≠ best'
+    verdict = 'pro = best' if rep['stats']['proIsBest'] else 'pro ≠ best'
     outcome = ('completed' if mom['actual']['success'] else 'FAILED') + f" ({mom['actual']['outcome']})"
-    ax.set_title(f"{mom['id']}  ·  {mom['difficulty']}  ·  {verdict}", fontsize=13, weight='bold')
-    bo = next(o for o in mom['options'] if o['pid'] == mom['best_option_pid'])
+    ax.set_title(f"{mom['id']}  ·  {rep['difficulty']}  ·  {verdict}", fontsize=13, weight='bold')
+    space = ' into space' if best['intoSpace'] else ''
     ax.text(0, -2.4, f"{mom['match_id']}  P{mom['period']} {mom['clock']}  ·  you = #{you['num']}  ·  "
-                     f"pressure {mom['pressure_m']} m  ·  actual pass {outcome}  ·  best #{best['num']} "
-                     f"(value {bo['value']})   →  attacking", fontsize=8, color='white', va='center')
+                     f"pressure {rep['parts']['pressure']} m  ·  actual pass {outcome}  ·  best #{best['num']}{space} "
+                     f"(value {best['value']}, {round(100 * best['p'])}%)   →  attacking", fontsize=8, color='white', va='center')
     from matplotlib.lines import Line2D
     ax.legend(handles=[Line2D([], [], color='#ffd400', lw=2.2, label='actual pass'),
-                       Line2D([], [], color='black', lw=1.8, ls='--', label='best option'),
+                       Line2D([], [], color='black', lw=1.8, ls='--', label='best option (game)'),
                        Line2D([], [], color='#ff8080', lw=1.6, ls=':', label='taker run'),
                        Line2D([], [], marker='o', ls='', color='#1f6fd1', label='attacking'),
                        Line2D([], [], marker='o', ls='', color='#d63a2f', label='defending')],
@@ -1023,10 +893,10 @@ LICENCE = ('Contains data from the Deutsche Fußball Liga (DFL), published as op
            'Coordinates transformed (attack normalised left to right).')
 
 
-def run_node(here, script, *args):
+def run_node(here, script, *args, check=True):
     """Run one of the game's TypeScript scripts (via tsx), so the pipeline uses the game's own code."""
     import subprocess
-    return subprocess.run(['node', '--import', 'tsx', script, *map(str, args)], cwd=here, check=True)
+    return subprocess.run(['node', '--import', 'tsx', script, *map(str, args)], cwd=here, check=check)
 
 
 def main():
@@ -1038,6 +908,8 @@ def main():
     ap.add_argument('--out', default=os.path.join(here, 'public', 'moments'),
                     help='folder for <id>.json + <id>.play.json (default: the app, public/moments)')
     ap.add_argument('--clean', action='store_true', help='delete the moment files already in --out first')
+    ap.add_argument('--rejected', default=os.path.join(here, 'rejected'),
+                    help='candidates that failed the game\'s checks, with the reason')
     ap.add_argument('--previews', default=os.path.join(here, 'previews'))
     ap.add_argument('--cache', default=os.path.join(here, 'cache'))
     ap.add_argument('--n', type=int, default=30)
@@ -1086,80 +958,97 @@ def main():
     print(f'Event->tracking sync correction: median {np.median(s1):.2f}s (pass 1), '
           f'{np.median(s2):.2f}s (pass 2)')
 
-    # 4. selection + QA (a moment failing QA is replaced by re-running the selection without it)
-    rejected = {}
-    while True:
-        chosen = select([c for c in cands if id(c) not in rejected], matches, args.n, args.seed)
-        bad = {id(c): qa(c) for c in chosen}
-        bad = {k: v for k, v in bad.items() if v}
-        if not bad:
-            break
-        for c in chosen:
-            if id(c) in bad:
-                rejected[id(c)] = (f"{c['match_id']} P{c['period']} {c['clock']}", bad[id(c)])
-
-    # 5. outputs: one file per moment (the data contract: raw facts only) + its replay data. The game
-    #    computes every judgement itself; it finds the files through the manifest (index.json).
+    # 4. moments already there (by stable id) are never picked again, nor anything within MIN_GAP_S of them
     os.makedirs(args.out, exist_ok=True)
     os.makedirs(args.previews, exist_ok=True)
     if args.clean:
         for f in glob(os.path.join(args.out, '*.json')) + glob(os.path.join(args.previews, '*.png')):
             os.remove(f)
-    out_moments, size = [], 0
+    app_dir = os.path.join(here, 'public', 'moments')
+    existing = []
+    for d in {os.path.abspath(args.out), os.path.abspath(app_dir)}:
+        for f in glob(os.path.join(d, '*.json')):
+            mm = re.match(r'^(.+)-(\d+)\.json$', os.path.basename(f))
+            if mm and not f.endswith('.play.json'):
+                existing.append((mm.group(1), int(mm.group(2))))
+    if existing:
+        print(f'{len(existing)} moments already exist: they and anything within {MIN_GAP_S:g} s of them are skipped')
+
+    #    checked by the game: failures go to --rejected with the reason
+    os.makedirs(args.rejected, exist_ok=True)
+    for f in glob(os.path.join(args.rejected, '*')):
+        os.remove(f)
+    work = os.path.join(args.rejected, '.work')
+    os.makedirs(work, exist_ok=True)
+    reject_reasons = Counter()
+
+    def on_reject(c, problems):
+        with open(os.path.join(args.rejected, f"{c['id']}.json"), 'w', encoding='utf-8') as fh:
+            json.dump(public(c), fh, ensure_ascii=False, separators=(',', ':'))
+        with open(os.path.join(args.rejected, f"{c['id']}.play.json"), 'w', encoding='utf-8') as fh:
+            json.dump(c['_play'], fh, ensure_ascii=False, separators=(',', ':'))
+        with open(os.path.join(args.rejected, f"{c['id']}.reason.txt"), 'w', encoding='utf-8') as fh:
+            fh.write('\n'.join(problems) + '\n')
+        for p in problems:   # tally by kind (numbers and player ids stripped)
+            reject_reasons[re.sub(r'#\d+|-?\d+(\.\d+)?%?|\(.*?\)', '…', p.split(': ', 1)[-1])[:90]] += 1
+
+    print(f'Checking candidates with the game (scripts/check_moments.ts), {CHECK_BATCH} at a time...')
+    chosen, reports = select(here, cands, matches, args.n, args.seed, existing, work, on_reject)
+    import shutil
+    shutil.rmtree(work, ignore_errors=True)
+
+    # 5. outputs: one file per moment (the data contract: raw facts only) + its replay data. The game
+    #    computes every judgement itself; it finds the files through the manifest (index.json).
+    size = 0
     for c in chosen:
-        draw_preview({**c, **c['_final']}, os.path.join(args.previews, f"{c['id']}.png"))
-        mom = {k: v for k, v in c.items() if not k.startswith('_')}
-        out_moments.append(mom)
+        draw_preview(public(c), reports[c['id']], os.path.join(args.previews, f"{c['id']}.png"))
         path = os.path.join(args.out, f"{c['id']}.json")
         with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(mom, fh, ensure_ascii=False, separators=(',', ':'))
+            json.dump(public(c), fh, ensure_ascii=False, separators=(',', ':'))
         size += os.path.getsize(path)
         with open(os.path.join(args.out, f"{c['id']}.play.json"), 'w', encoding='utf-8') as fh:
             json.dump(c['_play'], fh, ensure_ascii=False, separators=(',', ':'))
     with open(os.path.join(args.out, 'LICENCE.txt'), 'w', encoding='utf-8') as fh:
         fh.write(LICENCE + '\n')
-    in_app = os.path.abspath(args.out) == os.path.abspath(os.path.join(here, 'public', 'moments'))
+    in_app = os.path.abspath(args.out) == os.path.abspath(app_dir)
     if in_app:   # writing straight into the app: refresh the manifest too
         run_node(here, 'scripts/build_manifest.ts', args.out)
 
-    # summary
+    # summary (judgements from the game's checker)
+    out = [reports[c['id']] for c in chosen]
+    k = max(1, len(out))
     print('\n================ SUMMARY ================')
     print(f'Wrote {len(chosen)} moments to {args.out} ({size / 1e6:.2f} MB, + <id>.play.json replays); '
           f'previews -> {args.previews}')
     if not in_app:
         print('  drop them in: copy the .json files into public/moments, then npm run manifest && npm run check')
     print('Moments per match:')
-    mc = Counter(m['match_id'] for m in out_moments)
+    mc = Counter(c['match_id'] for c in chosen)
     for m in matches:
         print(f'  {m.match_id}: {mc[m.match_id]:2d}  (from {per_match_cands[m.match_id]} candidates)')
-    dc = Counter(c['_final']['difficulty'] for c in chosen)
-    print('Difficulty (pipeline heuristic): ' + ', '.join(f'{k} {dc[k]}' for k in ('easy', 'medium', 'hard')))
-    nb = sum(not c['_final']['pro_was_best'] for c in chosen)
-    fl = sum(not m['actual']['success'] for m in out_moments)
+    dc = Counter(r['difficulty'] for r in out)
+    print('Difficulty (game model): ' + ', '.join(f'{d} {dc[d]}' for d in ('easy', 'medium', 'hard')))
+    pb = sum(r['stats']['proIsBest'] for r in out)
+    w5 = [r for r in out if r['stats']['proValue'] is not None]
+    n5 = sum(r['stats']['proValue'] >= r['stats']['best']['value'] - 5 for r in w5)
+    print(f'Pro = best (same pass): {pb}/{len(out)} ({100 * pb / k:.0f} %); '
+          f'pro within 5 points of the best: {n5}/{len(w5)}')
+    sp = sum(r['stats']['best']['intoSpace'] for r in out)
+    ps = sum(r['stats']['proIntoSpace'] for r in out)
+    lo = sum(r['stats']['proLofted'] for r in out)
+    print(f'Best option into space: {sp}/{len(out)}; pro\'s pass into space: {ps}/{len(out)}; pro\'s pass lofted: {lo}/{len(out)}')
+    fl = sum(not c['actual']['success'] for c in chosen)
     pr = sum(c['_pressured'] for c in chosen)
-    print(f'Pro != best: {nb}/{len(out_moments)} ({100 * nb / len(out_moments):.0f} %)')
-    print(f'Failed passes: {fl}/{len(out_moments)}   Pressured (pref. filter): {pr}/{len(out_moments)}')
-    oc = Counter(m['actual']['outcome'] for m in out_moments)
-    print('Pass 2 outcome (from tracking): ' + ', '.join(f'{k} {oc[k]}' for k in ('received', 'intercepted', 'out', 'loose')))
-    print('Best-option direction:')
-    for label, pool in (('all candidates', cands), ('selected', chosen)):
-        dirs = Counter(c['_sel']['options'][0]['direction'] for c in pool)
-        print(f'  {label:15s} ' + '  '.join(f'{k} {dirs[k]} ({100 * dirs[k] / len(pool):.0f} %)'
-                                            for k in ('forward', 'sideways', 'backward')))
-    back = [c for c in cands if c['_sel']['options'][0]['direction'] == 'backward']
-    blocked = sum(all(o['lane_open'] < FORWARD_OPEN_LANE_M for o in c['_sel']['options'] if o['direction'] == 'forward')
-                  for c in back)
-    print(f'  backward-best moments with every forward lane < {FORWARD_OPEN_LANE_M:g} m: {blocked}/{len(back)}')
+    print(f'Failed passes: {fl}/{len(chosen)}   Pressured (pref. filter): {pr}/{len(chosen)}')
+    oc = Counter(c['actual']['outcome'] for c in chosen)
+    print('Pass 2 outcome (from tracking): ' + ', '.join(f'{o} {oc[o]}' for o in ('received', 'intercepted', 'out', 'loose')))
     print(f'Candidate pass pairs skipped ({sum(skips.values())}):')
-    for k, v in skips.most_common():
-        print(f'  {v:5d}  {k}')
-    if rejected:
-        print('Selected moments rejected by QA and replaced:')
-        for desc, probs in rejected.values():
-            print(f'  {desc}: {"; ".join(probs)}')
-    else:
-        print('QA: all selected moments passed (ball at B on reception, players on pitch, direction).')
-
+    for kk, v in skips.most_common():
+        print(f'  {v:5d}  {kk}')
+    nrej = len(glob(os.path.join(args.rejected, '*.reason.txt')))
+    print(f'Rejected by the game\'s checks: {nrej} candidates (files + reasons in {args.rejected})')
+    for kk, v in reject_reasons.most_common(8):
+        print(f'  {v:5d}  {kk}')
 
 if __name__ == '__main__':
     main()

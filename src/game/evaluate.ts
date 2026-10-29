@@ -42,6 +42,10 @@ export interface RoundResult {
   lost: SpaceOutcome | null
   /** your pass's chance to arrive (expected-value model), null without a pass */
   p: number | null
+  /** how close an opponent came to cutting out your pass (space.ts riskLevel), null without a completed pass */
+  risk: 'low' | 'medium' | 'high' | null
+  /** the pro's real pass is the best option (same receiver and spot, about the same value) */
+  proIsBest: boolean
   /** players the feedback is about: drawn on top, never nudged aside */
   mentioned: number[]
   /** opponents who came close to cutting out your pass or the pro's (drawn as warnings) */
@@ -150,6 +154,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
         margin: proRisk ? Math.max(0, proRisk.slack) : Infinity,
         option: proOpt ?? optionAt(tr, takerIdx, proEnd),
         asPro: true,
+        lofted: proLoft,
       }
     }
     // aim assist only rescues a pass that would be lost: the ball otherwise goes exactly where you tapped
@@ -197,6 +202,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
         rivalIdx: snapped.idx,
         margin: -(feetRisk.slack + MODEL.passModel.bias),
         option: null,
+        lofted: Math.hypot(posAt(tr, tr.rec, snapped.idx)[0] - yu, posAt(tr, tr.rec, snapped.idx)[1] - yv) > RACE.loftFrom,
       }
     : null
   const tapDist = snapped.idx >= 0 ? snapped.dist : null
@@ -209,7 +215,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       : space?.option
         ? space.option.value
         : lostTo >= 0
-          ? optionAt(tr, lostTo, space!.end).value
+          ? (space!.aimed?.value ?? 0)
           : null
   const myRisk: Risk | null = space
     ? space.team === 'att' && !space.offside
@@ -238,16 +244,20 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const myOpt: PassOption | null =
     snapped.idx >= 0
       ? (options.find((o) => o.pid === tr.pids[snapped.idx]) ?? null)
-      : (space?.option ?? (lostTo >= 0 ? optionAt(tr, lostTo, space!.end) : null))
+      : (space?.option ?? (lostTo >= 0 ? (space!.aimed ?? null) : null))
   const myP = myOpt?.p ?? null
-  const mineIsBrave = !!myPass && !!brave && samePass(myPass, brave) && (chosenValue ?? 0) >= best.o.value + 0.5
+  // the brave option: worth more than the best, and as risky as it said (below best.minP to arrive)
+  const mineIsBrave =
+    !!myPass && !!brave && samePass(myPass, brave) && (chosenValue ?? 0) >= best.o.value + 0.5 && (myP ?? 1) < MODEL.best.minP
   // the same pass as the best = same receiver and spot, and (nearly) the same value
   const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - MODEL.best.sameValue
   const mineIsBest =
     !!myPass && ((samePass(myPass, best) && (chosenValue ?? 0) >= best.o.value - MODEL.best.sameValue) || (chosenValue ?? 0) >= best.o.value - 0.5)
   const mineIsPro = !!myPass && !!proPass && (samePass(myPass, proPass) || !!space?.asPro)
 
-  const spaceMem = space && input.tap ? spaceMemory(tr, input.tap) : null
+  // memory: against the teammate who got your pass (or the one it was meant for, if it was cut out)
+  const receiver = space ? (space.team === 'att' ? space.takerIdx : lostTo) : -1
+  const spaceMem = space && input.tap ? spaceMemory(tr, input.tap, receiver) : null
   const partial = {
     decision: decisionScore(chosenValue, bestValue),
     scan,
@@ -264,6 +274,8 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     brave: brave && !mineIsBrave ? { idx: brave.idx, end: brave.end, run: brave.run, value: brave.o.value, p: brave.o.p ?? 1 } : null,
     lost,
     p: myP,
+    risk: myRisk ? riskLevel(myRisk.slack) : null,
+    proIsBest,
     mentioned: [
       tr.youIdx,
       bestIdx,
@@ -323,6 +335,8 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     return { ...base, headline: 'Intercepted!', detail: `${cap(name(lost.takerIdx))} ${raceLost(myP)} your pass to #${tr.nums[snapped.idx]}${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
 
   const v = chosenValue ?? 0
+  // a high-risk pass (an opponent nearly cut it out) is never praised as better than the pro
+  const risky = base.risk === 'high' && myRisk ? `, but ${name(myRisk.idx)} nearly cut it out` : ''
   if (mineIsBrave)
     return {
       ...base,
@@ -339,8 +353,10 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     const proMore = proValue > v + 0.5 // the pro's pass into space was worth more, but not enough to be "the best"
     return {
       ...base,
-      headline: v > proValue ? 'Better than the pro!' : 'Best option!',
-      detail: proMore
+      headline: v > proValue && !risky ? 'Better than the pro!' : 'Best option!',
+      detail: risky
+        ? `${ran}You found the best option${risky} – the safest good pass there was.`
+        : proMore
         ? `${ran}You found the best option. The pro’s riskier ${proIntoSpace ? passKind(tr, takerIdx, proEnd) : 'pass'} was worth a little more (${Math.round(proValue)} vs ${Math.round(v)}).`
         : `${ran}You found the best option. ${why ? `${cap(why)}.` : proLine}`,
       tone: 'great',
@@ -348,6 +364,8 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   }
   if (mineIsPro)
     return { ...base, headline: 'Same pass as the pro', detail: `${ran}But ${bestDesc.replace(/^A /, 'a ')} ${where} was the best option – ${hint}.`, tone: 'ok' }
+  if (v > proValue && risky)
+    return { ...base, headline: 'Risky pass', detail: `${ran}Worth more than the pro’s on paper${risky}. ${bestDesc} ${where} was the best option – ${hint}.`, tone: 'ok' }
   if (v > proValue)
     return { ...base, headline: 'Better than the pro!', detail: `${ran}${bestDesc} ${where} was even better – ${hint}.`, tone: 'great' }
   return {

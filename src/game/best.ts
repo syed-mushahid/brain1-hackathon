@@ -100,6 +100,11 @@ function choose(tr: Track): Choice {
     }
   }
   const lineV = offsideLineV(tr)
+  // only spots a tap can actually play: not within reach of a teammate's feet (taps.snapM) or of the
+  // spot where the pro's completed pass was collected (taps.proSnapM: that tap replays the real pass)
+  const proSpot = m.actual.outcome === 'received' && tk && idxOf(tr, tk.pid) >= 0 ? toPortrait(m.actual.end.x, m.actual.end.y) : null
+  const mates: [number, number][] = []
+  for (let i = 0; i < tr.n; i++) if (tr.att[i] && i !== tr.youIdx) mates.push(posAt(tr, f, i))
   for (let i = 0; i < tr.n; i++) {
     if (!tr.att[i] || i === tr.youIdx || offsideBy(tr, i, lineV) > 0) continue
     const p = posAt(tr, f, i)
@@ -112,7 +117,8 @@ function choose(tr: Track): Choice {
     const running = Math.hypot(vx, vy) > runSpeedMin
     for (const q of spots) {
       if (q[0] < 1 || q[0] > PITCH_W - 1 || q[1] < 1 || q[1] > PITCH_L - 1) continue
-      if (Math.hypot(q[0] - p[0], q[1] - p[1]) < samePassM - 1) continue // that's a pass to his feet
+      if (mates.some((m) => Math.hypot(q[0] - m[0], q[1] - m[1]) <= MODEL.taps.snapM)) continue // a tap there is a pass to feet
+      if (proSpot && Math.hypot(q[0] - proSpot[0], q[1] - proSpot[1]) <= MODEL.taps.proSnapM) continue // a tap there plays the pro's pass
       if (runConeDeg !== null && running) {
         const off = Math.acos(((q[0] - p[0]) * vx + (q[1] - p[1]) * vy) / (Math.hypot(q[0] - p[0], q[1] - p[1]) * Math.hypot(vx, vy)))
         if (off > (runConeDeg * Math.PI) / 180) continue // not where his run is taking him
