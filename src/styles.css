@@ -639,6 +639,176 @@ button {
   padding-top: 8px;
 }
 
+/* big screens (>= 1180 px): the result in a panel left of the pitch, rules on the right, only Next
+   under the pitch. The pitch column is the round's 520 px in the middle. */
+.desk-panel {
+  --side: clamp(280px, calc(50vw - 300px), 400px);
+  position: fixed;
+  top: 16px;
+  bottom: 16px;
+  z-index: 4;
+  width: var(--side);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(21, 31, 56, 0.92);
+  box-shadow: inset 0 0 0 1px var(--line), 0 12px 40px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+  animation: fadein 0.25s ease both;
+}
+
+.desk-left {
+  right: calc(50% + 260px + 20px);
+}
+
+.desk-right {
+  left: calc(50% + 260px + 20px);
+}
+
+.desk-panel h3 {
+  margin: 18px 0 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.desk-left.waiting {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.desk-left .headline {
+  font-size: 1.3rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.desk-left .tone-great .headline {
+  color: var(--green);
+}
+
+.desk-left .tone-ok .headline {
+  color: var(--accent);
+}
+
+.desk-left .tone-bad .headline {
+  color: #ff8a6a;
+}
+
+.desk-left .detail {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.desk-left .result-top {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.desk-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.desk-left .replay-picks {
+  margin-bottom: 8px;
+}
+
+/* under the pitch: only Next */
+.result-sheet.desk {
+  padding: 10px 16px max(12px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, var(--bg) 40%);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 0;
+}
+
+.legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.legend-list small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.guide-nav {
+  display: grid;
+  gap: 8px;
+}
+
+.guide-nav .cta {
+  padding-block: 12px;
+  font-size: 0.95rem;
+}
+
+.guide-where {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.desk-right .how {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.guide-list li + li {
+  margin-top: 4px;
+}
+
+.guide-list b {
+  color: var(--text);
+}
+
+.guide-list li.guide-bands {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  margin-left: -18px;
+  list-style: none;
+}
+
+.band {
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: #0a1020;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.band.green {
+  background: var(--green);
+}
+
+.band.yellow {
+  background: var(--accent);
+}
+
+.band.red {
+  background: var(--red);
+}
+
 /* breakdown panels (Why? / Your scan / Match) */
 .sheet-panel {
   font-size: 15px;
@@ -1066,10 +1236,6 @@ button {
   animation: fadein 0.15s ease both;
 }
 
-.info-card small {
-  color: var(--muted);
-  font-size: 0.72rem;
-}
 
 /* Why? tab: the formulas, folded away */
 .how-scoring {

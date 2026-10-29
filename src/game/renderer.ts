@@ -66,8 +66,6 @@ export interface Scene {
   reveal: RevealDraw | null
   /** reveal camera: zoom k and css-px offset, so the action stays clear of the results sheet */
   view?: View
-  /** reveal: canvas height (css px) not covered by the results sheet; labels stay above it */
-  visibleH?: number
   time: number // ms, for pulses
 }
 
@@ -215,14 +213,6 @@ export class PitchRenderer {
         ctx.setTransform(dpr * vw.k, 0, 0, dpr * vw.k, dpr * vw.tx, dpr * vw.ty)
         this.drawYouRing(yu, yv, sc.time)
       }
-      if (sc.reveal) {
-        const R = sc.reveal
-        const lines: [number, number][] = [R.proEnd, R.best.alone ? R.best.end : R.best.ring]
-        if (R.chosenIdx >= 0) lines.push([sc.pos[R.chosenIdx * 2], sc.pos[R.chosenIdx * 2 + 1]])
-        else if (R.space) lines.push(R.space.end)
-        if (R.brave && R.show.brave) lines.push(R.brave.end)
-        this.youTag(yu, yv, vw, sc.visibleH ?? this.h, lines, true)
-      }
       return
     }
 
@@ -333,7 +323,6 @@ export class PitchRenderer {
       this.drawBall(bu, bv)
     }
     this.drawYouRing(yu, yv, sc.time)
-    if (sc.mode === 'decide') this.youTag(yu, yv, { k: 1, tx: 0, ty: 0 }, this.h, [], false)
   }
 
   /** Path of a cone from (u, v) facing `dir` (0 = up) with half-angle `half`, radius r metres. */
@@ -552,52 +541,6 @@ export class PitchRenderer {
       ctx.globalAlpha = 1
     }
     if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 || R.space ? C.mine : '#ff6b3d')
-  }
-
-  /** A small "You" tag next to the player on the ball (from the reception on). It goes where it stays
-   *  on screen (above the results sheet) and covers the fewest players and pass lines: above him first,
-   *  then around him. `lines` = where the arrows from him end; `others` = draw clear of the other players. */
-  private youTag(u: number, v: number, vw: View, visibleH: number, lines: [number, number][], others: boolean): void {
-    const { ctx, s } = this
-    const fs = Math.max(10, 1.25 * s)
-    ctx.font = `800 ${fs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
-    const w = ctx.measureText('You').width + fs
-    const h = fs * 1.45
-    const x0 = this.X(u)
-    const y0 = this.Y(v)
-    let best = { score: Infinity, cx: 0, cy: 0 }
-    ;[0, 1, -1, 2, -2, 3, -3, 4].forEach((step, rank) => {
-      const a = -Math.PI / 2 + (step * Math.PI) / 4 // 0 = straight up
-      const [dx, dy] = [Math.cos(a), Math.sin(a)]
-      const off = 3 * s + Math.abs(dy) * (h / 2) + Math.abs(dx) * (w / 2) // clear of his yellow ring
-      const cx = x0 + dx * off
-      const cy = y0 + dy * off
-      const inside = (px: number, py: number, pad = 0) =>
-        px > cx - w / 2 - pad && px < cx + w / 2 + pad && py > cy - h / 2 - pad && py < cy + h / 2 + pad
-      let score = rank * 0.5
-      // on screen (through the camera) and above the results sheet
-      const [sx0, sy0, sx1, sy1] = [vw.k * (cx - w / 2) + vw.tx, vw.k * (cy - h / 2) + vw.ty, vw.k * (cx + w / 2) + vw.tx, vw.k * (cy + h / 2) + vw.ty]
-      if (sx0 < 2 || sx1 > this.w - 2 || sy0 < 2 || sy1 > visibleH - 2) score += 1000
-      if (others && this.at)
-        for (let i = 0; i < this.tr.n; i++)
-          if (i !== this.tr.youIdx && inside(this.X(this.at[i * 2]), this.Y(this.at[i * 2 + 1]), 1.5 * s)) score += 10
-      for (const [lu, lv] of lines)
-        for (let k = 1; k <= 12; k++) {
-          if (!inside(x0 + ((this.X(lu) - x0) * k) / 12, y0 + ((this.Y(lv) - y0) * k) / 12)) continue
-          score += 8
-          break
-        }
-      if (score < best.score) best = { score, cx, cy }
-    })
-    const { cx, cy } = best
-    ctx.fillStyle = C.you
-    ctx.beginPath()
-    ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2)
-    ctx.fill()
-    ctx.fillStyle = '#1a1400'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText('You', cx, cy + 0.5)
   }
 
   /** The player who won the ball: a ring where he stood, then his run to the ball. */

@@ -24,12 +24,16 @@ import { dayKey, hashString } from './lib/util'
 import { sessionInsight, type SessionRound } from './lib/insights'
 import { MODEL } from './game/model.config'
 import { FEATURES } from './lib/features'
+import { useMedia } from './lib/useMedia'
+import { GuidePanel } from './components/GuidePanel'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
 import { loadPlay, withPlay } from './lib/plays'
 import { buildUserPlay, proStory, type PlayStory } from './game/userPlay'
 import type { ReplayMode } from './three/Replay3D'
 
+/** the Daily Challenge has 5 moments; free training goes on as long as you like, and counts for
+ *  your streak from this many rounds */
 export const ROUNDS_PER_SESSION = 5
 
 interface Session {
@@ -66,6 +70,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState<[number, number] | null>(null)
   const [profile, setProfileState] = useState<Profile>(loadProfile)
+  // big screens: the result in a panel left of the pitch, rules and a way home on the right
+  const desk = useMedia('(min-width: 1180px)')
   // Pro mode (3D first-person scan) is switched off for now: a saved "on" is ignored (lib/features.ts)
   const proMode = FEATURES.proMode && profile.proMode
   const [session, setSession] = useState<Session | null>(null)
@@ -186,27 +192,8 @@ export default function App() {
       setSession({ ...session, queue: [...session.queue, session.queue[0]], index: session.index + 1, result: null })
       return
     }
-    if (session.brains.length >= ROUNDS_PER_SESSION) {
-      const score = Math.round(session.brains.reduce((a, b) => a + b, 0) / session.brains.length)
-      const { profile: p, usedFreeze } = completeDay(profile)
-      const final = session.kind === 'daily' ? { ...p, daily: { day: dayKey(), brains: session.brains, score } } : p
-      setProfile(final)
-      setSummary({
-        kind: session.kind,
-        brains: session.brains,
-        score,
-        before: session.before,
-        after: ratings(final),
-        streak: final.streak.count,
-        usedFreeze,
-        level: final.level,
-        levelChanges: session.levelChanges,
-        insight: sessionInsight(session.rounds, session.before),
-      })
-      setSession(null)
-        sound.whistle(3, 0.28) // final whistle
-      return
-    }
+    // the Daily Challenge ends after its 5 moments; training goes on until you end it
+    if (session.kind === 'daily' && session.brains.length >= ROUNDS_PER_SESSION) return finish(true)
     const queue =
       session.kind === 'training'
         ? [...session.queue, pickTraining(profile, data.moments, session.queue.map((m) => m.id))]
@@ -218,6 +205,46 @@ export default function App() {
       result: null,
       settings: session.kind === 'daily' ? LEVEL_SETTINGS.normal : LEVEL_SETTINGS[profile.level],
     })
+  }
+
+  /** End the session: the summary (or straight home). A day counts for the streak with the whole
+   *  Daily Challenge or ROUNDS_PER_SESSION training rounds. */
+  const finish = (toSummary: boolean) => {
+    if (!session) return
+    if (!session.brains.length) return setSession(null) // nothing played yet
+    const score = Math.round(session.brains.reduce((a, b) => a + b, 0) / session.brains.length)
+    const counts = session.brains.length >= ROUNDS_PER_SESSION
+    const { profile: p, usedFreeze } = counts ? completeDay(profile) : { profile, usedFreeze: false }
+    const final = session.kind === 'daily' ? { ...p, daily: { day: dayKey(), brains: session.brains, score } } : p
+    setProfile(final)
+    setSession(null)
+    if (!toSummary) return
+    setSummary({
+      kind: session.kind === 'daily' ? 'daily' : 'training',
+      brains: session.brains,
+      score,
+      before: session.before,
+      after: ratings(final),
+      streak: final.streak.count,
+      dayCounted: counts,
+      usedFreeze,
+      level: final.level,
+      levelChanges: session.levelChanges,
+      insight: sessionInsight(session.rounds, session.before),
+    })
+    sound.whistle(3, 0.28) // final whistle
+  }
+
+  /** Home from the middle of a session (big screens: the button in the right panel). */
+  const goHome = () => {
+    if (!session) return
+    if (session.kind === 'test') return endTest()
+    if (session.kind === 'daily') {
+      // an unfinished Daily Challenge doesn't count as today's challenge (its rounds stay in your ratings)
+      if (session.brains.length < ROUNDS_PER_SESSION && !confirm('Leave the Daily Challenge? It only counts when all 5 moments are played.')) return
+      return setSession(null)
+    }
+    finish(false)
   }
 
   /** 3D replay: the pro's real play, or your pass simulated (both need plays.json first) */
@@ -255,8 +282,8 @@ export default function App() {
         ? `Test · try ${n}`
         : session.kind === 'daily'
           ? `Daily ${n}/${ROUNDS_PER_SESSION}`
-          : `Training ${n}/${ROUNDS_PER_SESSION}`
-    const last = session.brains.length >= ROUNDS_PER_SESSION
+          : `Training ${n}`
+    const last = session.kind === 'daily' && session.brains.length >= ROUNDS_PER_SESSION
     return (
       <>
         <Round
@@ -274,10 +301,31 @@ export default function App() {
               onNext={next}
               nextLabel={session.kind === 'test' ? 'Play again' : last ? 'See summary' : 'Next moment'}
               onWatch3D={watch3D}
-              exit={session.kind === 'test' ? { label: `Moment ${current!.id} · back home`, onExit: endTest } : undefined}
+              exit={
+                session.kind === 'test'
+                  ? { label: `Moment ${current!.id} · back home`, onExit: endTest }
+                  : session.kind === 'training'
+                    ? { label: 'End training · see summary', onExit: () => finish(true) }
+                    : undefined
+              }
+              desk={desk}
             />
           )}
         </Round>
+        {desk && !session.result && (
+          <aside className="desk-panel desk-left waiting" aria-label="Your result">
+            <p>Your score, the feedback and the replays appear here after your pass.</p>
+          </aside>
+        )}
+        {desk && (
+          <GuidePanel
+            kind={session.kind}
+            round={n}
+            level={session.kind === 'training' ? profile.level : null}
+            onHome={goHome}
+            onEnd={session.kind === 'training' && session.brains.length ? () => finish(true) : undefined}
+          />
+        )}
         {replayLoading && <div className="replay3d r3-loading">Loading 3D…</div>}
         {replay && (
           <Suspense fallback={<div className="replay3d r3-loading">Loading 3D…</div>}>
