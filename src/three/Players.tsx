@@ -15,6 +15,7 @@ export interface Clock {
   rate: number // animation speed multiplier (0 = frozen)
   highlight: boolean // show the best option beam
   hideYou?: boolean // first-person: don't render your own body around the camera
+  ballScale?: number // far cameras (TV): draw the ball bigger so it stays visible
 }
 
 const HEIGHT_M = 1.8
@@ -184,13 +185,17 @@ export function Players({ world, clock }: { world: World; clock: { current: Cloc
     }
     // ball + its blob shadow (there are no real shadows)
     ball.current?.position.set(sample.ball[0], sample.ball[1], sample.ball[2])
+    ball.current?.scale.setScalar(c.ballScale ?? 1)
     if (ballShadow.current) {
       ballShadow.current.position.set(sample.ball[0], 0.02, sample.ball[2])
       const k = 1 / (1 + sample.ball[1] * 0.25)
       ballShadow.current.scale.setScalar(k)
       ;(ballShadow.current.material as THREE.MeshBasicMaterial).opacity = 0.45 * k
     }
-    youRing.current?.position.set(sample.x[world.youIdx], 0.03, sample.z[world.youIdx])
+    if (youRing.current) {
+      youRing.current.position.set(sample.x[world.youIdx], 0.03, sample.z[world.youIdx])
+      youRing.current.visible = !c.hideYou // first person: it would sit right under the camera
+    }
     const b = world.bestIdx
     const t = state.clock.elapsedTime
     if (bestRing.current && beam.current && b >= 0) {

@@ -1,8 +1,21 @@
+import type { Team } from '../types'
 import { idxOf, posAt, toPortrait, type Track } from './track'
-import { brainScore, decisionScore, memoryScore, scanScore, type Scores } from './scoring'
+import { explain, type Breakdown } from './explain'
+import { findBestPass, SAME_VALUE, samePass } from './best'
+import { arrivalTime, gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
+import type { PassOption } from '../types'
+import { brainScore, decisionScore, memoryScore, scanScore, spaceMemoryScore, type Scores } from './scoring'
 import { RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
-export const SNAP_M = 12 // a tap further than this from every teammate is a miss
+const cap = (t: string) => t.replace(/^./, (c) => c.toUpperCase())
+
+/** a pass into space aimed this close to where the pro's completed pass was collected = the pro's pass */
+const PRO_SNAP_M = 5
+/** aim assist: a pass into space is also tried this far around the tap (fingers aren't precise) */
+const AIM_R = 2.5
+
+/** a tap this close to a teammate is a pass to his feet; anywhere else the ball goes where you tapped */
+export const SNAP_M = 5
 
 export interface RoundInput {
   tap: [number, number] | null // pitch metres (portrait), null = timed out
@@ -11,11 +24,23 @@ export interface RoundInput {
 
 export interface RoundResult {
   momentId: string
-  chosenIdx: number // -1 = miss / timeout
+  chosenIdx: number // -1 = pass into space / timeout
   tap: [number, number] | null
   tapDist: number | null
   bestIdx: number
+  /** the best pass (to feet or into space); alone = not the same as yours or the pro's (drawn separately) */
+  best: { idx: number; end: [number, number]; run: [number, number][] | null; alone: boolean }
   proEnd: [number, number]
+  /** the player who took the pro's pass over and his run to the ball (portrait metres) */
+  run: { pts: [number, number][]; team: Team } | null
+  /** your pass into space (a tap away from every teammate): who won the race to the ball */
+  space: SpaceOutcome | null
+  /** offside line (portrait v) when any teammate was beyond it as you passed, else null */
+  offsideV: number | null
+  /** opponents who came close to cutting out your pass or the pro's (drawn as warnings) */
+  threats: { from: [number, number]; at: [number, number] }[]
+  /** the "Why? / Your scan / Match" panels */
+  breakdown: Breakdown
   headline: string
   detail: string
   tone: 'great' | 'ok' | 'bad'
@@ -41,17 +66,85 @@ export function snap(tr: Track, tap: [number, number]): { idx: number; dist: num
 export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const m = tr.m
   const valueOf = (pid: string | null) => m.options.find((o) => o.pid === pid)?.value ?? 0
-  const bestIdx = idxOf(tr, m.best_option_pid)
+  // the best pass may be to a teammate's feet or into space (best.ts)
+  const best = findBestPass(tr)
+  const bestIdx = best.idx
   const bestNum = tr.nums[bestIdx]
   const [yu, yv] = posAt(tr, tr.rec, tr.youIdx)
   const [bu, bv] = posAt(tr, tr.rec, bestIdx)
   const where = whereIs(yu, yv, bu, bv)
+  const bestDesc = best.intoSpace ? `A through ball to #${bestNum}` : `#${bestNum}`
   const proPid = m.actual.intended_pid ?? m.actual.target_pid
   const proIdx = idxOf(tr, proPid)
+  const tk = m.actual.taker
+  const takerIdx = tk ? idxOf(tr, tk.pid) : -1
+  const run =
+    tk && takerIdx >= 0
+      ? { pts: tk.run.map(([x, y]) => toPortrait(x, y)), team: (tr.att[takerIdx] ? 'att' : 'def') as Team }
+      : null
+  const runEnd = tk?.run[tk.run.length - 1]
+  const ranM = tk && runEnd ? Math.hypot(runEnd[0] - tk.run[0][0], runEnd[1] - tk.run[0][1]) : 0
+  const proTo = proIdx >= 0 ? `#${tr.nums[proIdx]}` : null
+  const takerNum = takerIdx >= 0 ? tr.nums[takerIdx] : 0
   const proLine =
-    proIdx >= 0
-      ? `The pro played #${tr.nums[proIdx]}${m.actual.success ? '' : ' – and lost the ball'}.`
-      : 'The pro’s pass was intercepted.'
+    m.actual.outcome === 'intercepted' && takerIdx >= 0
+      ? proTo
+        ? `The pro played ${proTo} – red #${takerNum} intercepted it.`
+        : `The pro’s pass was intercepted by red #${takerNum}.`
+      : m.actual.outcome === 'out'
+        ? `The pro played ${proTo ?? 'it'} – it went out of play.`
+        : !proTo
+          ? 'The pro’s pass was intercepted.'
+          : m.actual.success && ranM >= 6
+            ? `The pro played it into space for #${takerNum} to run onto.`
+            : `The pro played ${proTo}${m.actual.success ? '' : ' – and lost the ball'}.`
+
+  // The pro's real pass, judged like yours: to a teammate's feet, or into space when the
+  // receiver had to run onto it (then it is scored at the spot he collected it, not where he stood).
+  const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
+  const proIntoSpace =
+    m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= 5
+  const proOpt: PassOption | null = proIntoSpace ? optionAt(tr, takerIdx, proEnd) : (m.options.find((o) => o.pid === proPid) ?? null)
+  // for "better than the pro": a pro pass that was lost (intercepted / out) is worth nothing
+  const proValue = m.actual.outcome === 'received' ? (proOpt?.value ?? 0) : 0
+  // risk = the closest an opponent came to cutting the pass out (only for passes that got through)
+  const proRisk =
+    m.actual.outcome !== 'received' || takerIdx < 0
+      ? null
+      : proIntoSpace
+        ? passRisk(tr, proEnd, arrivalTime(tr, takerIdx, proEnd))
+        : passRisk(tr, posAt(tr, tr.rec, takerIdx))
+
+  // Reading a pass into space. Taps aren't precise, so:
+  //  - aimed near where the pro's completed pass was collected = you played the pro's pass, and you
+  //    get what really happened in the match (receiver, run, value), not the model
+  //  - otherwise the ball goes to the tap; if a teammate can't win it there, 8 points AIM_R around
+  //    the tap are tried and the best one a teammate wins is used
+  const readSpace = (tap: [number, number]): SpaceOutcome => {
+    if (m.actual.outcome === 'received' && takerIdx >= 0 && run && Math.hypot(tap[0] - proEnd[0], tap[1] - proEnd[1]) <= PRO_SNAP_M) {
+      return {
+        end: proEnd,
+        takerIdx,
+        team: 'att',
+        run: run.pts,
+        t: arrivalTime(tr, takerIdx, proEnd),
+        rivalIdx: proRisk?.idx ?? -1,
+        margin: proRisk ? Math.max(0, proRisk.slack) : Infinity,
+        option: proOpt ?? optionAt(tr, takerIdx, proEnd),
+        asPro: true,
+      }
+    }
+    // aim assist only rescues a pass that would be lost: the ball otherwise goes exactly where you tapped
+    const center = simulateSpacePass(tr, tap)
+    if (center.option) return center
+    let best = center
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4
+      const o = simulateSpacePass(tr, [tap[0] + AIM_R * Math.cos(a), tap[1] + AIM_R * Math.sin(a)])
+      if (o.option && (!best.option || o.option.value > best.option.value)) best = o
+    }
+    return best
+  }
 
   const seen = input.scans.map((s) => s.sawBestBefore).filter((b): b is number => b !== null)
   const hint =
@@ -59,14 +152,56 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       ? 'you never looked that way'
       : seen.some((b) => b <= RECENT_SCAN_S)
         ? 'you saw it in your scan'
-        : 'you looked too early'
+        : `you looked too early – last check ${Math.min(...seen).toFixed(1)} s before the ball came`
 
-  const snapped = input.tap ? snap(tr, input.tap) : { idx: -1, dist: Infinity }
+  // The ball goes where you tap: close to a teammate = a pass to his feet (memory = how close
+  // you tapped), anywhere else = a pass into space (race to the ball). A tap that is closer to
+  // where the pro's through ball was collected than to any teammate is the pro's pass.
+  const bestValue = best.o.value
+  const scan = scanScore(input.scans)
+  const lineV = offsideLineV(tr)
+  const near = input.tap ? snap(tr, input.tap) : { idx: -1, dist: Infinity }
+  const toProEnd = input.tap && proIntoSpace ? Math.hypot(input.tap[0] - proEnd[0], input.tap[1] - proEnd[1]) : Infinity
+  const toFeet = near.idx >= 0 && near.dist <= toProEnd
+  const space: SpaceOutcome | null = input.tap && !toFeet ? readSpace(input.tap) : null
+  const snapped = space ? { idx: -1, dist: Infinity } : near
   const tapDist = snapped.idx >= 0 ? snapped.dist : null
+  const chosenValue = snapped.idx >= 0 ? valueOf(tr.pids[snapped.idx]) : space?.option ? space.option.value : null
+  const myRisk: Risk | null = space
+    ? space.team === 'att' && !space.offside
+      ? passRisk(tr, space.end, space.t)
+      : null
+    : snapped.idx >= 0
+      ? passRisk(tr, posAt(tr, tr.rec, snapped.idx))
+      : null
+  const threats = [myRisk, proRisk]
+    .filter((r): r is Risk => r !== null && riskLevel(r.slack) === 'high')
+    .map((r) => ({ from: posAt(tr, tr.rec, r.idx), at: r.at }))
+  // each pass as (receiver, end point): two passes are the same when those match (best.ts)
+  const proPass =
+    m.actual.outcome === 'received' && takerIdx >= 0
+      ? { idx: takerIdx, end: proEnd }
+      : proIdx >= 0
+        ? { idx: proIdx, end: posAt(tr, tr.rec, proIdx) }
+        : null
+  const myPass =
+    space && space.team === 'att' && !space.offside
+      ? { idx: space.takerIdx, end: space.end }
+      : snapped.idx >= 0
+        ? { idx: snapped.idx, end: posAt(tr, tr.rec, snapped.idx) }
+        : null
+  // the same pass as the best = same receiver and spot, and (nearly) the same value
+  const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - SAME_VALUE
+  const mineIsBest =
+    !!myPass && ((samePass(myPass, best) && (chosenValue ?? 0) >= best.o.value - SAME_VALUE) || (chosenValue ?? 0) >= best.o.value - 0.5)
+  const mineIsPro = !!myPass && !!proPass && (samePass(myPass, proPass) || !!space?.asPro)
+
+  const spaceMem = space && input.tap ? spaceMemory(tr, input.tap) : null
   const partial = {
-    decision: decisionScore(snapped.idx >= 0 ? valueOf(tr.pids[snapped.idx]) : null, valueOf(m.best_option_pid)),
-    scan: scanScore(input.scans),
-    memory: memoryScore(tapDist),
+    decision: decisionScore(chosenValue, bestValue),
+    scan,
+    // a pass into space: how close you aimed to where your teammate was heading
+    memory: space && spaceMem ? spaceMemoryScore(spaceMem.dist) : memoryScore(tapDist),
   }
   const base = {
     momentId: m.id,
@@ -74,31 +209,73 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     tap: input.tap,
     tapDist,
     bestIdx,
-    proEnd: toPortrait(m.actual.end.x, m.actual.end.y),
+    best: { idx: bestIdx, end: best.end, run: best.run, alone: !proIsBest && !mineIsBest },
+    proEnd,
+    run,
+    space,
+    offsideV: tr.pids.some((_, i) => tr.att[i] && i !== tr.youIdx && offsideBy(tr, i, lineV) > 0) ? lineV + OFFSIDE_TOL_M : null, // draw the real line, not the noise allowance
+    threats,
     scores: { ...partial, brain: brainScore(partial) },
+    breakdown: explain(tr, input.scans, snapped.idx, proLine, space, {
+      memory: spaceMem && { num: tr.nums[spaceMem.idx], dist: spaceMem.dist },
+      pro: proOpt && { o: proOpt, intoSpace: proIntoSpace, risk: proRisk },
+      mine: myRisk,
+      best,
+      proIsBest,
+      mineIsBest,
+      mineIsPro,
+    }),
   }
 
-  if (snapped.idx < 0) {
+  const bestLine = `${bestDesc} was open ${where} – ${hint}.`
+  const offsideMsg = (i: number) => ({
+    ...base,
+    headline: 'Offside!',
+    detail: `#${tr.nums[i]} was ${(offsideBy(tr, i, lineV) + OFFSIDE_TOL_M).toFixed(1)} m beyond the offside line when you passed – free kick to the opponents. ${bestLine}`,
+    tone: 'bad' as const,
+  })
+  const proFound = proIsBest ? ' The pro found it.' : ''
+  if (space?.offside) return offsideMsg(space.takerIdx)
+  if (!input.tap) return { ...base, headline: 'Too slow!', detail: bestLine + proFound, tone: 'bad' }
+  // what happened to your pass into space (the race)
+  let ran = ''
+  if (space) {
+    const name = (i: number) => `${tr.att[i] ? '' : 'red '}#${tr.nums[i]}`
+    const race =
+      space.rivalIdx >= 0 && Number.isFinite(space.margin)
+        ? space.margin < 0.05
+          ? `in a dead heat with ${name(space.rivalIdx)}`
+          : `${gap(space.margin)} before ${name(space.rivalIdx)}`
+        : 'with nobody else close'
+    if (space.takerIdx < 0)
+      return { ...base, headline: 'Out of play', detail: `Nobody could reach your pass before it crossed the line. ${bestLine}${proFound}`, tone: 'bad' }
+    if (space.team === 'def')
+      return { ...base, headline: 'Intercepted!', detail: `${name(space.takerIdx)} got to your pass ${race}. ${bestLine}${proFound}`.replace(/^r/, 'R'), tone: 'bad' }
+    ran = space.asPro ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match. ` : `#${tr.nums[space.takerIdx]} ran onto it ${race}. `
+  } else if (m.options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
+
+  const v = chosenValue ?? 0
+  if (mineIsBest && mineIsPro) return { ...base, headline: 'Same as the pro!', detail: `${ran}And it was the best option. Elite.`, tone: 'great' }
+  if (mineIsBest && proIsBest)
+    return { ...base, headline: 'As good as the pro!', detail: `${ran}You and the pro found different passes that were equally good.`, tone: 'great' }
+  if (mineIsBest) {
+    // the main reason it beat the pro's pass (the first point after the race line, for a pass into space)
+    const why = proOpt ? base.breakdown.why.points[space ? 1 : 0] : null
     return {
       ...base,
-      headline: input.tap ? 'No teammate there' : 'Too slow!',
-      detail: `#${bestNum} was open ${where} – ${hint}.`,
-      tone: 'bad',
+      headline: v > proValue ? 'Better than the pro!' : 'Best option!',
+      detail: `${ran}You found the best option. ${why ? `${cap(why)}.` : proLine}`,
+      tone: 'great',
     }
   }
-  const chosenPid = tr.pids[snapped.idx]
-  const isBest = chosenPid === m.best_option_pid
-  const isPro = chosenPid === proPid
-  if (isBest && isPro) return { ...base, headline: 'Same as the pro!', detail: 'And it was the best option. Elite.', tone: 'great' }
-  if (isBest) return { ...base, headline: 'Better than the pro!', detail: `You found the best option. ${proLine}`, tone: 'great' }
-  if (valueOf(chosenPid) > valueOf(proPid))
-    return { ...base, headline: 'Better than the pro!', detail: `#${bestNum} ${where} was even better – ${hint}.`, tone: 'great' }
-  if (isPro)
-    return { ...base, headline: 'Same as the pro', detail: `But #${bestNum} ${where} was the best option – ${hint}.`, tone: 'ok' }
+  if (mineIsPro)
+    return { ...base, headline: 'Same pass as the pro', detail: `${ran}But ${bestDesc.replace(/^A /, 'a ')} ${where} was the best option – ${hint}.`, tone: 'ok' }
+  if (v > proValue)
+    return { ...base, headline: 'Better than the pro!', detail: `${ran}${bestDesc} ${where} was even better – ${hint}.`, tone: 'great' }
   return {
     ...base,
-    headline: `#${bestNum} was open ${where}`,
-    detail: `${hint[0].toUpperCase()}${hint.slice(1)}. ${proLine}`,
-    tone: 'bad',
+    headline: space ? (partial.decision >= 75 ? 'Good pass into space' : `#${tr.nums[space.takerIdx]} got there`) : `${bestDesc} ${where} was the best option`,
+    detail: `${ran}${space ? `${bestDesc} ${where} was the best option – ${hint}.` : `${cap(hint)}.`}${proIsBest ? ' The pro found it.' : ` ${proLine}`}`,
+    tone: space && partial.decision >= 75 ? 'great' : space || partial.decision >= 70 ? 'ok' : 'bad',
   }
 }

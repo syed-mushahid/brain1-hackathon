@@ -1,9 +1,15 @@
-import { Suspense, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
-import { FPS, posAt, sample, type Track } from './track'
+import { createContext, Suspense, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
+import { buildTrack, FPS, posAt, sample, type Track } from './track'
+import { loadPlays, withPlay } from '../lib/plays'
+import { buildUserPlay, proStory, storyCaption, type PlayStory } from './userPlay'
+import { Rich } from '../components/Rich'
 import { PitchRenderer, type RevealDraw, type Scene, type View } from './renderer'
 import { evaluate, type RoundResult } from './evaluate'
 import { coneVis, dirTo, HEAD_TURN, turnTowards, type ScanRecord } from './vision'
 import { ScanDial } from './ScanDial'
+import { findBestPass } from './best'
+import { minuteLabel } from './explain'
+import type { Moment } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
 import { ProScan3D } from '../three/lazy'
@@ -27,6 +33,15 @@ const REVEAL_ANIM_MS = 900
 const DARKEN_MS = 300 // vision shrinking to "you" at reception
 const LIFT_MS = 350 // darkness lifting at the reveal
 const FRAME_MARGIN_M = 7 // space kept around the action when the reveal camera frames it
+const REPLAY_LEAD_S = 1 // the 2D replay starts this long before the reception
+const REPLAY_HOLD_MS = 1200 // ...and holds the last frame this long before returning to the reveal
+
+/** Lets the results sheet (rendered as a child of the round) start the 2D replay. */
+export const RoundControls = createContext<{ replay2D: (who: PlayStory['who']) => void; stopReplay: () => void; replaying: boolean }>({
+  replay2D: () => {},
+  stopReplay: () => {},
+  replaying: false,
+})
 
 interface Props {
   track: Track
@@ -48,6 +63,9 @@ interface Api {
   proLook: (dir: number) => void
   tap: (cx: number, cy: number) => void
   ready: () => void
+  /** play the real frames (reception -> pass -> takeover) on the pitch */
+  replay: (played: Track, kick: number, take: number) => void
+  stopReplay: () => void
 }
 
 export function Round({ track, settings, label, onResult, children, proMode = false }: Props) {
@@ -57,6 +75,17 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
   const dialRef = useRef<HTMLDivElement>(null)
   const dialTimeRef = useRef<HTMLElement>(null)
   const [phase, setPhase] = useState<Phase>('intro')
+  // 2D replay: -1 = off, 0 = ball coming, 1 = on the ball, 2 = pass travelling, 3 = taken over
+  const [replayStage, setReplayStage] = useState(-1)
+  const [replayError, setReplayError] = useState('')
+  const replayTok = useRef(0) // a stop while plays.json is still loading cancels that replay
+  const [replayStory, setReplayStory] = useState<PlayStory | null>(null)
+  const lastResult = useRef<RoundResult | null>(null) // for the "your pass" replay
+  const stopReplay = () => {
+    replayTok.current++
+    setReplayStage(-1)
+    api.current?.stopReplay()
+  }
   const api = useRef<Api | null>(null)
   const pitchAim = useRef(false) // a finger is aiming on the pitch
   // shared with the 3D view in Pro mode
@@ -73,7 +102,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
     const r = new PitchRenderer(canvas, track)
     const pos = new Float32Array(track.n * 2)
     const ball = new Float32Array(2)
-    const bestIdx = track.pids.indexOf(track.m.best_option_pid)
+    const bestIdx = findBestPass(track).idx // may be a pass into space: the receiver is who you should spot
     sample(track, 0, pos, ball)
     const startDir = dirTo(pos[track.youIdx * 2], pos[track.youIdx * 2 + 1], ball[0], ball[1])
     const g = {
@@ -89,6 +118,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       settled: false, // reveal animation finished: stop redrawing every frame
       kicked: false,
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
+      replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
     }
     sound.whistle(1, 0.22)
     sound.crowd(0.25)
@@ -117,7 +147,21 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       stopLook()
       sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
       const res = evaluate(track, { tap, scans: g.scans })
-      g.reveal = { progress: 0, tap: res.tap, chosenIdx: res.chosenIdx, proEnd: res.proEnd, bestIdx: res.bestIdx }
+      g.reveal = {
+        progress: 0,
+        tap: res.tap,
+        chosenIdx: res.chosenIdx,
+        proEnd: res.proEnd,
+        bestIdx: res.bestIdx,
+        best: { end: res.best.end, run: res.best.run, alone: res.best.alone },
+        run: res.run,
+        space: res.space && {
+          end: res.space.end,
+          run: res.space.team ? { pts: res.space.run, team: res.space.team } : null,
+        },
+        threats: res.threats,
+        offsideV: res.offsideV,
+      }
       if (tap) {
         sound.kick(0.9)
         vibrate(15)
@@ -125,24 +169,29 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       sound.react(res.tone === 'great')
       setTimeout(() => vibrate(res.tone === 'great' ? [20, 60, 20] : res.tone === 'bad' ? 70 : 30), 350)
       go('reveal', now)
+      lastResult.current = res
       onResultRef.current(res, g.scans)
+    }
+    /** Height of the canvas area not covered by the results sheet (css px). */
+    const visibleHeight = () => {
+      const root = rootRef.current
+      const sheet = root?.querySelector<HTMLElement>('.result-sheet')
+      if (!root || !sheet) return r.h
+      // offsetTop ignores the sheet's slide-in transform: we aim for where it will settle
+      const sheetTop = root.getBoundingClientRect().top + sheet.offsetTop
+      return Math.max(120, Math.min(r.h, sheetTop - canvas.getBoundingClientRect().top - 6))
     }
     /** The box that matters at the reveal, fitted into the canvas area not covered by the sheet. */
     const revealView = (R: RevealDraw): View => {
       const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), R.proEnd]
-      if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx))
+      if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end)
       if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
       if (R.tap) pts.push(R.tap)
+      if (R.run) pts.push(...R.run.pts)
+      if (R.space) pts.push(R.space.end, ...(R.space.run?.pts ?? []))
       const us = pts.map((p) => p[0])
       const vs = pts.map((p) => p[1])
-      let visibleH = r.h
-      const root = rootRef.current
-      const sheet = root?.querySelector<HTMLElement>('.result-sheet')
-      if (root && sheet) {
-        // offsetTop ignores the sheet's slide-in transform: we aim for where it will settle
-        const sheetTop = root.getBoundingClientRect().top + sheet.offsetTop
-        visibleH = Math.max(120, Math.min(r.h, sheetTop - canvas.getBoundingClientRect().top - 6))
-      }
+      const visibleH = visibleHeight()
       return r.fitView(
         Math.min(...us) - FRAME_MARGIN_M,
         Math.min(...vs) - FRAME_MARGIN_M,
@@ -193,6 +242,34 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           g.waitFor3D = false
           g.t0 = performance.now()
         }
+      },
+      replay(played, kick, take) {
+        if (g.phase !== 'reveal') return
+        // frame the whole play: the ball's path, you and whoever ends up with it
+        const f0 = Math.max(0, played.rec - REPLAY_LEAD_S * FPS)
+        const end = played.nFrames - 1
+        const us: number[] = []
+        const vs: number[] = []
+        for (let f = f0; f <= end; f++) {
+          us.push(played.ball[f * 2], posAt(played, f, played.youIdx)[0])
+          vs.push(played.ball[f * 2 + 1], posAt(played, f, played.youIdx)[1])
+        }
+        const view = r.fitView(
+          Math.min(...us) - FRAME_MARGIN_M,
+          Math.min(...vs) - FRAME_MARGIN_M,
+          Math.max(...us) + FRAME_MARGIN_M,
+          Math.max(...vs) + FRAME_MARGIN_M,
+          visibleHeight(),
+        )
+        g.replay = { tr: played, f: f0, end, kick, take, hold: 0, stage: -1, view }
+        sound.whistle(1, 0.12)
+      },
+      stopReplay() {
+        if (!g.replay) return
+        g.replay = null
+        sample(track, track.rec, pos, ball) // back to the reveal picture
+        g.settled = false
+        setReplayStage(-1)
       },
     }
 
@@ -263,6 +340,29 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 
       // Pro mode: the 3D view covers the pitch until reception, skip the 2D draw
       if (proMode && (g.phase === 'intro' || g.phase === 'approach')) return
+      if (g.replay) {
+        // 2D replay of the real play: real frames at real speed, then back to the reveal
+        const P = g.replay
+        P.f = Math.min(P.end, P.f + (dt / 1000) * FPS)
+        sample(P.tr, P.f, pos, ball)
+        const stage = P.f < P.tr.rec ? 0 : P.f < P.kick ? 1 : P.f < P.take ? 2 : 3
+        if (stage !== P.stage) {
+          P.stage = stage
+          setReplayStage(stage)
+          if (stage === 2) sound.kick(0.8)
+        }
+        if (P.f >= P.end && (P.hold += dt) > REPLAY_HOLD_MS) {
+          api.current?.stopReplay()
+          return
+        }
+        const v = g.view
+        const a = 1 - Math.exp(-dt / 160)
+        v.k += (P.view.k - v.k) * a
+        v.tx += (P.view.tx - v.tx) * a
+        v.ty += (P.view.ty - v.ty) * a
+        r.draw({ mode: 'reveal', pos, ball, headDir: 0, look: 0, decideLeft: 1, reveal: null, view: v, blend: 1, time: now })
+        return
+      }
       if (g.reveal) {
         // reveal camera: ease towards a view that keeps the action above the results sheet
         const tgt = revealView(g.reveal)
@@ -364,9 +464,22 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           <div className="overlay intro">
             <div className="big">Get ready</div>
             <div className="sub">Hold &amp; turn the dial – or drag on the pitch – to look around.</div>
+            <Who m={m} />
           </div>
         )}
-        {phase === 'decide' && <div className="overlay banner">PASS! Tap your teammate</div>}
+        {replayStage >= 0 && (
+          <div className="replay2d-bar">
+            <span className="rec-dot" />
+            <span className="replay2d-text">
+              <Rich text={replayStory ? storyCaption(track.m, replayStory, replayStage) : 'Loading the play…'} />
+            </span>
+            <button className="icon-btn" onClick={stopReplay} aria-label="Stop replay">
+              ✕
+            </button>
+          </div>
+        )}
+        {replayError && <div className="replay2d-bar error">Replay unavailable – {replayError}</div>}
+        {phase === 'decide' && <div className="overlay banner">PASS! Tap a teammate – or the space</div>}
         {proMode && (phase === 'intro' || phase === 'approach') && (
           <Suspense fallback={<div className="overlay intro"><div className="sub">Loading 3D…</div></div>}>
             <ProScan3D
@@ -381,6 +494,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           <div className="overlay intro pro-intro">
             <div className="big">Pro mode</div>
             <div className="sub">Look around before the ball arrives</div>
+            <Who m={m} />
           </div>
         )}
       </div>
@@ -399,7 +513,54 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           <span className="dial-hint right">{settings.scanBudgetMs / 1000}s scan time</span>
         </div>
       </footer>
-      {phase === 'reveal' && children}
+      {phase === 'reveal' && (
+        <RoundControls.Provider
+          value={{
+            replaying: replayStage >= 0,
+            stopReplay,
+            replay2D: (who) => {
+              const tok = ++replayTok.current
+              setReplayError('')
+              setReplayStory(null)
+              setReplayStage(0)
+              loadPlays()
+                .then((plays) => plays[track.m.id] ?? null)
+                .catch(() => null) // no play data: your pass can still be simulated
+                .then((play) => {
+                  if (tok !== replayTok.current) return
+                  const pm =
+                    who === 'pro'
+                      ? play && proStory(withPlay(track.m, play))
+                      : lastResult.current && buildUserPlay(track, lastResult.current, play)
+                  if (!pm) throw new Error(who === 'pro' ? 'no data for the real play' : 'you did not pass')
+                  setReplayStory(pm.story)
+                  api.current?.replay(buildTrack(pm), pm.kickFrame, pm.takeFrame)
+                })
+                .catch((e) => {
+                  setReplayStage(-1)
+                  setReplayError(String(e instanceof Error ? e.message : e))
+                })
+            },
+          }}
+        >
+          {children}
+        </RoundControls.Provider>
+      )}
     </div>
   )
 }
+
+/** "You are <player> · <team> · <minute>" on the intro screen */
+function Who({ m }: { m: Moment }) {
+  const you = m.names[m.you_pid]
+  const team = m.context.attacking === 'home' ? m.context.home : m.context.away
+  return (
+    <div className="who">
+      You are {you?.name ?? `#${m.you_pid.slice(1)}`}{' '}
+      <small>
+        · {team} · {minuteLabel(m)}
+      </small>
+    </div>
+  )
+}
+

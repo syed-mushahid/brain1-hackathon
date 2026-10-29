@@ -27,6 +27,8 @@ export interface PassOption {
   progress: number
   receiver_space: number
   direction: Direction
+  /** beyond the offside line when you would pass (value is then 0) */
+  offside?: boolean
   value: number
 }
 
@@ -45,13 +47,35 @@ export interface Moment {
   actual: {
     target_pid: string | null
     intended_pid: string | null
+    /** where the ball was taken over (or went out of play) */
     end: { x: number; y: number }
     length: number
     success: boolean
+    outcome: 'received' | 'intercepted' | 'out' | 'loose'
+    /** who took the ball over: his run from the reception frame to the takeover (t s later) */
+    taker: { pid: string; t: number; run: [number, number][] } | null
   }
   pro_was_best: boolean
+  /** match facts (DFL match information) */
+  context: MatchContext
+  /** pid -> real name and line-up position (pos is null for substitutes without one) */
+  names: Record<string, { name: string | null; pos: string | null }>
   difficulty: Difficulty
   pressure_m: number
+}
+
+export interface MatchContext {
+  competition: string
+  season: string
+  matchday: number
+  date: string // YYYY-MM-DD
+  home: string
+  away: string
+  result: string // final, home:away
+  stadium: string | null
+  attacking: 'home' | 'away'
+  score: string // home:away just before the moment
+  minute: number // 1-based match minute (P2 continues from 46)
 }
 
 export interface MomentsFile {

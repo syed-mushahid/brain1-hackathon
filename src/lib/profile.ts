@@ -49,7 +49,10 @@ export interface Ratings {
 /** Rolling average of the last 20 rounds (50 = starting value). */
 export function ratings(p: Profile): Ratings {
   const last = p.history.slice(-20)
-  const avg = (k: keyof Scores) => (last.length ? Math.round(last.reduce((s, r) => s + r[k], 0) / last.length) : 50)
+  const avg = (k: keyof Scores) => {
+    const xs = last.map((r) => r[k]).filter((x): x is number => x !== null) // memory may be "not tested"
+    return xs.length ? Math.round(xs.reduce((s, x) => s + x, 0) / xs.length) : 50
+  }
   return { scan: avg('scan'), memory: avg('memory'), decision: avg('decision'), overall: avg('brain'), rounds: p.history.length }
 }
 

@@ -3,21 +3,26 @@ import react from '@vitejs/plugin-react'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-// moments.json lives in the project root (written by extract_moments.py).
-// Serve it in dev and copy it into the build, so there is a single source of truth.
-const MOMENTS = fileURLToPath(new URL('./moments.json', import.meta.url))
+// moments.json and plays.json live in the project root (written by extract_moments.py).
+// Serve them in dev and copy them into the build, so there is a single source of truth.
+// plays.json (the rest of each play, for the replays) is only fetched when a replay is watched.
+const DATA_FILES = ['moments.json', 'plays.json']
 
 function momentsJson(): Plugin {
   return {
     name: 'moments-json',
     configureServer(server) {
-      server.middlewares.use('/moments.json', (_req, res) => {
-        res.setHeader('Content-Type', 'application/json')
-        res.end(fs.readFileSync(MOMENTS))
-      })
+      for (const name of DATA_FILES) {
+        const file = fileURLToPath(new URL(`./${name}`, import.meta.url))
+        server.middlewares.use(`/${name}`, (_req, res) => {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(fs.readFileSync(file))
+        })
+      }
     },
     generateBundle() {
-      this.emitFile({ type: 'asset', fileName: 'moments.json', source: fs.readFileSync(MOMENTS) })
+      for (const name of DATA_FILES)
+        this.emitFile({ type: 'asset', fileName: name, source: fs.readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url))) })
     },
   }
 }

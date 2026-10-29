@@ -50,8 +50,13 @@ export function coneVis(u: number, v: number, yu: number, yv: number, dir: numbe
 
 /** Plain-language location of a point relative to "you" (attack = up). */
 export function whereIs(yu: number, yv: number, u: number, v: number): string {
-  const a = dirTo(yu, yv, u, v) / DEG
-  if (Math.abs(a) <= 30) return 'ahead of you'
-  if (Math.abs(a) >= 150) return 'behind you'
-  return a > 0 ? 'on your right' : 'on your left'
+  return lookWord(dirTo(yu, yv, u, v), 'ahead of you', 'behind you', 'on your right', 'on your left')
+}
+
+/** A look direction in one word: ahead / behind / right / left. */
+export function lookWord(dir: number, ahead = 'ahead', behind = 'behind', right = 'right', left = 'left'): string {
+  const a = wrapAngle(dir) / DEG
+  if (Math.abs(a) <= 30) return ahead
+  if (Math.abs(a) >= 150) return behind
+  return a > 0 ? right : left
 }

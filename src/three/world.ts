@@ -7,7 +7,7 @@ export const PITCH_L = 105
 export const PITCH_W = 68
 export const BALL_R = 0.11
 export const FPS = 10
-const ARC_MIN_M = 20 // passes longer than this get a parabolic arc (no ball height in the data)
+const ARC_MIN_M = 20 // pass 1 longer than this gets a parabolic arc (no ball height in moments.json)
 
 export const wx = (x: number) => x - PITCH_L / 2
 export const wz = (y: number) => PITCH_W / 2 - y
@@ -60,9 +60,10 @@ export function buildWorld(m: Moment): World {
   })
 
   // no measured ball height: lift long passes on a parabola (peak grows with distance)
-  const hasZ = m.frames.some((fr) => fr.ball.z !== undefined)
   const p1 = m.pass1_frame_index ?? 0
   const rec = m.reception_frame_index
+  // (frames after the reception, from plays.json, do carry the measured height)
+  const hasZ = m.frames.slice(p1, rec + 1).some((fr) => fr.ball.z !== undefined)
   if (!hasZ && rec > p1) {
     const d = Math.hypot(bx[rec] - bx[p1], bz[rec] - bz[p1])
     if (d > ARC_MIN_M) {

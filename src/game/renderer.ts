@@ -1,3 +1,4 @@
+import type { Team } from '../types'
 import { PITCH_L, PITCH_W, type Track } from './track'
 import { CONE_HALF, CONE_RANGE, coneVis, VISION_FEATHER as FEATHER, VISION_R } from './vision'
 
@@ -14,6 +15,7 @@ const C = {
   mine: '#22e3ff',
   pro: '#ffd400',
   best: '#ffffff',
+  steal: '#ff6464',
 }
 
 export interface RevealDraw {
@@ -22,6 +24,17 @@ export interface RevealDraw {
   chosenIdx: number // -1 = miss
   proEnd: [number, number]
   bestIdx: number
+  /** the best pass: its end (a teammate's feet or a spot in space), his run there, and whether it gets
+   *  its own arrow (alone = not the same as your pass or the pro's; otherwise only the dashed ring) */
+  best: { end: [number, number]; run: [number, number][] | null; alone: boolean }
+  /** who took the pro's pass over: his run from the decision frame to the ball */
+  run: { pts: [number, number][]; team: Team } | null
+  /** your pass into space: where the ball was won and the winner's run (null run = out of play) */
+  space: { end: [number, number]; run: { pts: [number, number][]; team: Team } | null } | null
+  /** offside line (v) to draw, when a teammate was beyond it as you passed */
+  offsideV: number | null
+  /** opponents who nearly cut a pass out: from where he stood to where he'd meet the ball */
+  threats: { from: [number, number]; at: [number, number] }[]
 }
 
 export interface Scene {
@@ -348,12 +361,60 @@ export class PitchRenderer {
     const R = sc.reveal!
     const p = R.progress
     const at = (i: number): [number, number] => [sc.pos[i * 2], sc.pos[i * 2 + 1]]
-    // best option (dashed white)
-    const best = at(R.bestIdx)
-    this.ring(best[0], best[1], C.best, true)
-    this.arrow(yu, yv, best[0], best[1], C.best, p, true)
+    // offside line across the pitch
+    if (R.offsideV !== null) {
+      ctx.globalAlpha = Math.min(1, p * 2)
+      ctx.strokeStyle = 'rgba(255,212,0,0.7)'
+      ctx.lineWidth = 0.2 * s
+      ctx.setLineDash([0.9 * s, 0.6 * s])
+      ctx.beginPath()
+      ctx.moveTo(this.X(0), this.Y(R.offsideV))
+      ctx.lineTo(this.X(PITCH_W), this.Y(R.offsideV))
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.font = `700 ${Math.max(9, 1.3 * s)}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'middle'
+      const lx = this.X(yu + 2) // next to you: always in view
+      const ly = this.Y(R.offsideV)
+      const tw = ctx.measureText('offside line').width
+      ctx.fillStyle = 'rgba(10,16,32,0.8)'
+      ctx.fillRect(lx - 0.4 * s, ly - 0.9 * s, tw + 0.8 * s, 1.8 * s)
+      ctx.fillStyle = 'rgba(255,212,0,0.95)'
+      ctx.fillText('offside line', lx, ly)
+      ctx.globalAlpha = 1
+    }
+    // best option (dashed white ring; its own dashed arrow only when nobody played it)
+    const [be, bf] = R.best.end
+    this.ring(be, bf, C.best, true)
+    if (R.best.alone) {
+      this.arrow(yu, yv, be, bf, C.best, p, true)
+      if (R.best.run) this.run(R.best.run, C.best, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
+    }
     // the pro's actual pass (yellow)
     this.arrow(yu, yv, R.proEnd[0], R.proEnd[1], C.pro, Math.max(0, Math.min(1, p * 1.4 - 0.2)), false)
+    // ...and who took it over: his run to the ball (yellow = teammate, red = interception)
+    if (R.run) this.takeover(R.run.pts, R.run.team === 'att' ? C.pro : C.steal, p)
+    this.ghostBall(R.proEnd, p)
+    // your pass into space (cyan): who won the race to the ball (cyan = teammate, red = interception)
+    if (R.space) {
+      const [eu, ev] = R.space.end
+      this.arrow(yu, yv, eu, ev, C.mine, Math.max(0, Math.min(1, p * 1.4 - 0.4)), false)
+      const cutOff = !R.space.run || R.space.run.team === 'def' // (aim assist can also move the end a little)
+      if (cutOff && R.tap && Math.hypot(R.tap[0] - eu, R.tap[1] - ev) > 2 && p > 0.6) {
+        // the rest of the path it never travelled
+        ctx.strokeStyle = 'rgba(34,227,255,0.45)'
+        ctx.lineWidth = 0.25 * s
+        ctx.setLineDash([0.6 * s, 0.6 * s])
+        ctx.beginPath()
+        ctx.moveTo(this.X(eu), this.Y(ev))
+        ctx.lineTo(this.X(R.tap[0]), this.Y(R.tap[1]))
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+      if (R.space.run) this.takeover(R.space.run.pts, R.space.run.team === 'att' ? C.mine : C.steal, p)
+      this.ghostBall(R.space.end, p)
+    }
     // your pass (cyan) + memory error (tap -> true position)
     if (R.chosenIdx >= 0) {
       const c = at(R.chosenIdx)
@@ -370,7 +431,56 @@ export class PitchRenderer {
         ctx.setLineDash([])
       }
     }
-    if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 ? C.mine : '#ff6b3d')
+    // near misses: red dashes from the opponent to where he could have met the ball
+    if (p > 0.6) {
+      ctx.globalAlpha = Math.min(1, (p - 0.6) / 0.3)
+      for (const t of R.threats) {
+        ctx.strokeStyle = C.steal
+        ctx.lineWidth = 0.22 * s
+        ctx.setLineDash([0.5 * s, 0.45 * s])
+        ctx.beginPath()
+        const d = Math.hypot(t.at[0] - t.from[0], t.at[1] - t.from[1])
+        const k = Math.min(1, 1.6 / Math.max(d, 1e-3)) // start at the edge of his dot
+        ctx.moveTo(this.X(t.from[0] + (t.at[0] - t.from[0]) * k), this.Y(t.from[1] + (t.at[1] - t.from[1]) * k))
+        ctx.lineTo(this.X(t.at[0]), this.Y(t.at[1]))
+        ctx.stroke()
+        ctx.setLineDash([])
+        ctx.beginPath()
+        ctx.arc(this.X(t.at[0]), this.Y(t.at[1]), 0.6 * s, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      ctx.globalAlpha = 1
+    }
+    if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 || R.space ? C.mine : '#ff6b3d')
+  }
+
+  /** The player who won the ball: a ring where he stood, then his run to the ball. */
+  private takeover(pts: [number, number][], col: string, p: number): void {
+    const { ctx, s } = this
+    const [su, sv] = pts[0]
+    ctx.globalAlpha = Math.min(1, p * 2)
+    ctx.strokeStyle = col
+    ctx.lineWidth = 0.3 * s
+    ctx.beginPath()
+    ctx.arc(this.X(su), this.Y(sv), 2.1 * s, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+    this.run(pts, col, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
+  }
+
+  /** Where the ball was won (or went out). */
+  private ghostBall([u, v]: [number, number], p: number): void {
+    if (p <= 0.85) return
+    const { ctx, s } = this
+    ctx.globalAlpha = (p - 0.85) / 0.15
+    ctx.strokeStyle = '#fff'
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'
+    ctx.lineWidth = 0.25 * s
+    ctx.beginPath()
+    ctx.arc(this.X(u), this.Y(v), 0.7 * s, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+    ctx.globalAlpha = 1
   }
 
   private ring(u: number, v: number, color: string, dashed: boolean): void {
@@ -421,7 +531,52 @@ export class PitchRenderer {
     ctx.lineTo(xe, ye)
     ctx.stroke()
     ctx.setLineDash([])
-    const hs = 1.5 * s
+    this.head(xe, ye, ang, 1.5 * s)
+  }
+
+  /** A player's run (pitch-metre polyline, smoothed and dotted), drawn in up to p. */
+  private run(pts: [number, number][], color: string, p: number): void {
+    if (p <= 0 || pts.length < 2) return
+    const { ctx, s } = this
+    const xy = pts.map(([u, v]): [number, number] => [this.X(u), this.Y(v)])
+    const cum = [0]
+    for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]))
+    const total = cum[cum.length - 1]
+    const d0 = 1.9 * s // leave his dot clear
+    if (total < d0 + 1.5 * s) return // barely moved: the ring around him says enough
+    const d1 = d0 + (total - d0) * p
+    const at = (d: number): [number, number] => {
+      let i = 1
+      while (i < cum.length - 1 && cum[i] < d) i++
+      const w = (d - cum[i - 1]) / Math.max(1e-6, cum[i] - cum[i - 1])
+      return [xy[i - 1][0] + (xy[i][0] - xy[i - 1][0]) * w, xy[i - 1][1] + (xy[i][1] - xy[i - 1][1]) * w]
+    }
+    const line: [number, number][] = [at(d0)]
+    for (let i = 1; i < xy.length; i++) if (cum[i] > d0 && cum[i] < d1) line.push(xy[i])
+    line.push(at(d1))
+    ctx.strokeStyle = color
+    ctx.fillStyle = color
+    ctx.lineWidth = 0.5 * s
+    ctx.lineCap = 'round'
+    ctx.setLineDash([0.01 * s, 0.95 * s])
+    ctx.beginPath()
+    ctx.moveTo(line[0][0], line[0][1])
+    // quadratic curves through the midpoints: a smooth run instead of 5 fps corners
+    for (let i = 1; i < line.length - 1; i++) {
+      const mx = (line[i][0] + line[i + 1][0]) / 2
+      const my = (line[i][1] + line[i + 1][1]) / 2
+      ctx.quadraticCurveTo(line[i][0], line[i][1], mx, my)
+    }
+    const [xe, ye] = line[line.length - 1]
+    ctx.lineTo(xe, ye)
+    ctx.stroke()
+    ctx.setLineDash([])
+    const [xb, yb] = at(Math.max(d0, d1 - 1.2 * s))
+    this.head(xe, ye, Math.atan2(ye - yb, xe - xb), 1.2 * s)
+  }
+
+  private head(xe: number, ye: number, ang: number, hs: number): void {
+    const { ctx } = this
     ctx.beginPath()
     ctx.moveTo(xe + Math.cos(ang) * hs * 0.6, ye + Math.sin(ang) * hs * 0.6)
     ctx.lineTo(xe + Math.cos(ang + 2.5) * hs, ye + Math.sin(ang + 2.5) * hs)

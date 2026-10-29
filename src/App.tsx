@@ -21,7 +21,10 @@ import {
 } from './lib/profile'
 import { dayKey } from './lib/util'
 import { sound } from './lib/sound'
-import { loadProScan3D, Replay3D } from './three/lazy'
+import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
+import { loadPlays, withPlay } from './lib/plays'
+import { buildUserPlay, proStory, type PlayStory } from './game/userPlay'
+import type { ReplayMode } from './three/Replay3D'
 
 export const ROUNDS_PER_SESSION = 5
 
@@ -42,7 +45,8 @@ export default function App() {
   const [profile, setProfileState] = useState<Profile>(loadProfile)
   const [session, setSession] = useState<Session | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
-  const [replay, setReplay] = useState<Moment | null>(null)
+  const [replay, setReplay] = useState<{ moment: Moment; mode: ReplayMode; bestIdx: number } | null>(null)
+  const [replayLoading, setReplayLoading] = useState(false)
 
   useEffect(() => {
     fetch('./moments.json')
@@ -127,6 +131,22 @@ export default function App() {
     })
   }
 
+  /** 3D replay: the pro's real play, or your pass simulated (both need plays.json first) */
+  const watch3D = (mode: ReplayMode, who: PlayStory['who'] = 'pro') => {
+    if (!current || !track || !session?.result) return
+    const res = session.result
+    setReplayLoading(true)
+    void loadReplay3D()
+    loadPlays()
+      .then((plays) => plays[current.id] ?? null)
+      .catch(() => null) // no play data: the pro's replay stops at the decision, yours is still simulated
+      .then((play) => {
+        const pm = who === 'pro' ? play && proStory(withPlay(current, play)) : buildUserPlay(track, res, play)
+        setReplay({ moment: pm ?? current, mode, bestIdx: res.bestIdx })
+      })
+      .finally(() => setReplayLoading(false))
+  }
+
   const togglePro = () => setProfile({ ...profile, proMode: !profile.proMode })
 
   const toggleMute = () => {
@@ -159,13 +179,14 @@ export default function App() {
               result={session.result}
               onNext={next}
               nextLabel={last ? 'See summary' : 'Next moment'}
-              onWatch3D={() => setReplay(current)}
+              onWatch3D={watch3D}
             />
           )}
         </Round>
+        {replayLoading && <div className="replay3d r3-loading">Loading 3D…</div>}
         {replay && (
           <Suspense fallback={<div className="replay3d r3-loading">Loading 3D…</div>}>
-            <Replay3D moment={replay} onClose={() => setReplay(null)} />
+            <Replay3D moment={replay.moment} mode={replay.mode} bestIdx={replay.bestIdx} onClose={() => setReplay(null)} />
           </Suspense>
         )}
       </>

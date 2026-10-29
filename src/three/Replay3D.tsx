@@ -2,29 +2,49 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { Moment } from '../types'
-import { buildWorld, FPS, type World } from './world'
+import type { PlayedMoment } from '../lib/plays'
+import { proStory, storyCaption, storyEnd, type StoryMoment } from '../game/userPlay'
+import { Rich } from '../components/Rich'
+import { buildWorld, FPS, PITCH_L, PITCH_W, type World } from './world'
 import { Players, type Clock } from './Players'
 import { Stadium } from './Stadium'
 import { EYE_H, firstPersonFov, gazeQuat, TOP_FOV, topDownPose, updateGaze, type Gaze } from './camera'
 
-type Stage = 'loading' | 'flyIn' | 'play' | 'pause' | 'flyOut' | 'done'
+/** eyes = first person from "you"; tv = broadcast camera on the gantry above the stand */
+export type ReplayMode = 'eyes' | 'tv'
+
+type Stage = 'loading' | 'flyIn' | 'play' | 'pause' | 'after' | 'flyOut' | 'done'
 
 const FLY_S = 1.6
 const PAUSE_S = 3.5
-const REPLAY_S = 3
+const REPLAY_S = 3 // eyes: seconds shown before the reception
+const TV_LEAD_S = 1 // tv: seconds shown before the reception
+// broadcast camera: on the gantry of the near stand (stands start 8 m beyond the touchline)
+const TV_HEIGHT = 18
+const TV_Z = PITCH_W / 2 + 12
+const TV_WIDTH_M = 62 // how much of the pitch the shot shows across (landscape)
+const TV_MAX_VFOV = 50 // portrait phones: a tighter shot instead of a sky full of nothing
+const TV_FOLLOW_Z = 0.9 // aim (almost) at the ball across the pitch, keeping a little of the centre
+const TV_BALL_SCALE = 2.2 // the ball is 40-80 m from the gantry: draw it bigger
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
-/** Drives the clock and the camera: top-down -> eyes -> replay -> pause -> top-down. */
+const isPlayed = (m: Moment): m is PlayedMoment => 'kickFrame' in m
+
+/** Drives the clock and the camera for both replay modes. */
 function Director({
   world,
+  mode,
   clock,
   onStage,
+  onFrame,
   skip,
 }: {
   world: World
+  mode: ReplayMode
   clock: { current: Clock }
   onStage: (s: Stage) => void
+  onFrame: (f: number) => void
   skip: { current: boolean }
 }) {
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
@@ -37,10 +57,14 @@ function Director({
       eye: new THREE.Vector3(),
       fpQ: new THREE.Quaternion(),
       target: new THREE.Vector3(),
+      tvLook: new THREE.Vector3(),
+      tvPos: new THREE.Vector3(),
     }),
     [],
   )
-  const f0 = Math.max(0, world.rec - REPLAY_S * FPS)
+  const end = world.nFrames - 1
+  const hasAfter = end > world.rec
+  const f0 = Math.max(0, world.rec - (mode === 'tv' ? TV_LEAD_S : REPLAY_S) * FPS)
 
   const eyeAt = (f: number, out: THREE.Vector3) => {
     const i = Math.round(f) * world.n + world.youIdx
@@ -52,17 +76,24 @@ function Director({
   }
 
   useEffect(() => {
-    clock.current = { f: f0, rate: 0, highlight: false }
-    // start the gaze already looking at the ball, so the fly-in lands smoothly
-    eyeAt(f0, tmp.eye)
-    ballAt(f0, tmp.target)
-    const dx = tmp.target.x - tmp.eye.x
-    const dz = tmp.target.z - tmp.eye.z
-    gaze.current = { yaw: Math.atan2(-dx, -dz), pitch: -0.15 }
-    st.current = { stage: 'flyIn', t: 0 }
+    clock.current = { f: f0, rate: mode === 'tv' ? 1 : 0, highlight: false }
+    if (mode === 'tv') {
+      // start already framing the ball
+      ballAt(f0, tmp.tvLook)
+      tmp.tvLook.set(tmp.tvLook.x, 0, tmp.tvLook.z * TV_FOLLOW_Z)
+      tmp.tvPos.set(THREE.MathUtils.clamp(tmp.tvLook.x, -PITCH_L * 0.4, PITCH_L * 0.4), TV_HEIGHT, TV_Z)
+      st.current = { stage: 'play', t: 0 }
+      onStage('play')
+    } else {
+      // start the gaze already looking at the ball, so the fly-in lands smoothly
+      eyeAt(f0, tmp.eye)
+      ballAt(f0, tmp.target)
+      gaze.current = { yaw: Math.atan2(-(tmp.target.x - tmp.eye.x), -(tmp.target.z - tmp.eye.z)), pitch: -0.15 }
+      st.current = { stage: 'flyIn', t: 0 }
+      onStage('flyIn')
+    }
     skip.current = false
-    onStage('flyIn')
-  }, [world])
+  }, [world, mode])
 
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.05)
@@ -75,7 +106,39 @@ function Director({
       s.t = 0
       onStage(next)
     }
+    onFrame(c.f)
 
+    // ---- TV: follow the ball from the gantry, real speed, start to end
+    if (mode === 'tv') {
+      if (s.stage === 'play') {
+        c.f = Math.min(end, c.f + dt * FPS)
+        if (c.f >= end) {
+          c.rate = 0
+          go('done')
+        }
+      }
+      ballAt(c.f, tmp.target)
+      const a = 1 - Math.exp(-dt * 2.2)
+      tmp.tvLook.lerp(new THREE.Vector3(tmp.target.x, 0, tmp.target.z * TV_FOLLOW_Z), a)
+      tmp.tvPos.x += (THREE.MathUtils.clamp(tmp.tvLook.x, -PITCH_L * 0.4, PITCH_L * 0.4) - tmp.tvPos.x) * a
+      tmp.tvPos.y = TV_HEIGHT
+      tmp.tvPos.z = TV_Z
+      camera.position.copy(tmp.tvPos)
+      camera.lookAt(tmp.tvLook)
+      // keep ~TV_WIDTH_M of pitch across the screen, whatever the aspect
+      const dist = tmp.tvPos.distanceTo(tmp.tvLook)
+      const hfov = 2 * Math.atan(TV_WIDTH_M / 2 / dist)
+      const fov = Math.min(TV_MAX_VFOV, THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(hfov / 2) / aspect)))
+      if (Math.abs(camera.fov - fov) > 0.05) {
+        camera.fov = fov
+        camera.updateProjectionMatrix()
+      }
+      c.hideYou = false
+      c.ballScale = TV_BALL_SCALE
+      return
+    }
+
+    // ---- eyes: top-down -> your eyes -> last seconds -> decision -> what happened -> top-down
     if (s.stage === 'play') {
       c.f = Math.min(world.rec, c.f + dt * FPS)
       if (c.f >= world.rec) {
@@ -83,11 +146,17 @@ function Director({
         c.highlight = true
         go('pause')
       }
+    } else if (s.stage === 'after') {
+      c.f = Math.min(end, c.f + dt * FPS)
+      if (c.f >= end) {
+        c.rate = 0
+        go('flyOut')
+      }
     }
 
-    // first-person pose at the current frame; gaze follows the ball, then the best option
+    // first-person pose at the current frame; gaze follows the ball, at the decision the best option
     eyeAt(c.f, tmp.eye)
-    if (s.stage === 'pause' || s.stage === 'flyOut' || s.stage === 'done') {
+    if (s.stage === 'pause' || ((s.stage === 'flyOut' || s.stage === 'done') && !hasAfter)) {
       const b = world.bestIdx >= 0 ? world.bestIdx : world.youIdx
       const k = Math.round(c.f) * world.n + b
       tmp.target.set(world.px[k], 1.1, world.pz[k])
@@ -117,7 +186,11 @@ function Director({
       go('play')
     } else if (s.stage === 'pause' && (s.t >= PAUSE_S || skip.current)) {
       skip.current = false
-      go('flyOut')
+      c.highlight = false
+      if (hasAfter) {
+        c.rate = 1
+        go('after')
+      } else go('flyOut')
     } else if (s.stage === 'flyOut' && s.t >= FLY_S) {
       go('done')
     }
@@ -125,25 +198,48 @@ function Director({
   return null
 }
 
-export default function Replay3D({ moment, onClose }: { moment: Moment; onClose: () => void }) {
-  const world = useMemo(() => buildWorld(moment), [moment])
+export default function Replay3D({
+  moment,
+  mode = 'eyes',
+  bestIdx,
+  onClose,
+}: {
+  moment: Moment | PlayedMoment
+  mode?: ReplayMode
+  /** the best pass's receiver (the game's best pass may be into space), else moments.json's */
+  bestIdx?: number
+  onClose: () => void
+}) {
+  const world = useMemo(() => {
+    const w = buildWorld(moment)
+    return bestIdx !== undefined && bestIdx >= 0 ? { ...w, bestIdx } : w
+  }, [moment, bestIdx])
   const clock = useRef<Clock>({ f: Math.max(0, world.rec - REPLAY_S * FPS), rate: 0, highlight: false })
   const skip = useRef(false)
   const [stage, setStage] = useState<Stage>('loading')
+  const [beat, setBeat] = useState(0) // what is happening in the real play (for the captions)
   const [run, setRun] = useState(0)
 
+  const played = isPlayed(moment)
+  const kick = played ? moment.kickFrame : Infinity
+  const take = played ? moment.takeFrame : Infinity
+  const onFrame = (f: number) => {
+    const b = f < world.rec ? 0 : f < kick ? 1 : f < take ? 2 : 3
+    if (b !== beat) setBeat(b)
+  }
+
+  // what the replay shows: the pro's real play, or your pass simulated (game/userPlay.ts)
+  const story = 'story' in moment ? (moment as StoryMoment).story : played ? proStory(moment).story : null
+  const beats = [0, 1, 2, 3].map((b) => (story ? storyCaption(moment, story, b) : ''))
   const best = world.bestIdx >= 0 ? world.nums[world.bestIdx] : null
-  const pro = world.proIdx >= 0 ? world.nums[world.proIdx] : null
   const caption: Record<Stage, string> = {
     loading: 'Loading 3D…',
     flyIn: 'Into your eyes…',
-    play: `${REPLAY_S} seconds before you receive the ball`,
-    pause:
-      best === null
-        ? 'Decision moment'
-        : `Decision moment – #${best} was the best option${pro !== null && pro !== best ? ` · the pro played #${pro}` : ''}`,
+    play: mode === 'tv' ? beats[beat] || 'The ball comes to you' : `${REPLAY_S} seconds before you receive the ball`,
+    pause: best === null ? 'Decision moment' : `Decision moment – #${best} was the best option`,
+    after: beats[beat],
     flyOut: 'Back to the overview',
-    done: 'Replay finished',
+    done: story ? `${story.who === 'pro' ? 'Real play' : 'Your pass'} · ${storyEnd(story)}` : 'Replay finished',
   }
 
   return (
@@ -158,18 +254,20 @@ export default function Replay3D({ moment, onClose }: { moment: Moment; onClose:
         <Suspense fallback={null}>
           <Stadium />
           <Players world={world} clock={clock} />
-          <Director key={run} world={world} clock={clock} onStage={setStage} skip={skip} />
+          <Director key={run} world={world} mode={mode} clock={clock} onStage={setStage} onFrame={onFrame} skip={skip} />
         </Suspense>
       </Canvas>
       <div className="r3-hud">
         <div className="r3-top">
-          <span className="chip">3D replay · {moment.clock}′</span>
+          <span className="chip">
+            {mode === 'tv' ? 'TV camera' : 'Your eyes'} · {story?.who === 'you' ? 'your pass' : 'real play'} · {moment.clock}′
+          </span>
           <button className="icon-btn" onClick={onClose} aria-label="Close 3D replay">
             ✕
           </button>
         </div>
-        <div className={`r3-caption stage-${stage}`} key={stage}>
-          {caption[stage]}
+        <div className={`r3-caption stage-${stage}`} key={`${stage}-${beat}`}>
+          <Rich text={caption[stage]} />
           {stage === 'pause' && <small>tap to continue</small>}
         </div>
         {stage === 'done' && (
