@@ -1,6 +1,6 @@
 import { createContext, Suspense, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
 import { buildTrack, FPS, posAt, sample, type Track } from './track'
-import { loadPlays, withPlay } from '../lib/plays'
+import { loadPlay, withPlay } from '../lib/plays'
 import { buildUserPlay, proStory, storyCaption, type PlayStory } from './userPlay'
 import { Rich } from '../components/Rich'
 import { PitchRenderer, type RevealDraw, type Scene, type View } from './renderer'
@@ -529,8 +529,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
               setReplayError('')
               setReplayStory(null)
               setReplayStage(0)
-              loadPlays()
-                .then((plays) => plays[track.m.id] ?? null)
+              loadPlay(track.m.id)
                 .catch(() => null) // no play data: your pass can still be simulated
                 .then((play) => {
                   if (tok !== replayTok.current) return

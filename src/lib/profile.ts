@@ -8,6 +8,7 @@ const KEY = 'scan-and-play/profile/v1'
 export type Level = 'easy' | 'normal' | 'hard'
 
 export interface RoundRecord extends Scores {
+  /** stable moment id (<match_id>-<reception_frame>) */
   id: string
   day: string
 }
@@ -16,6 +17,7 @@ export interface Profile {
   history: RoundRecord[] // newest last
   level: Level
   levelChangedAt: number // history length when the level last changed
+  /** times played, by stable moment id */
   played: Record<string, number>
   streak: { count: number; lastDay: string | null; freezeWeek: string | null }
   daily: { day: string; brains: number[]; score: number } | null
@@ -103,15 +105,23 @@ export function pickTraining(p: Profile, moments: Moment[], exclude: string[]): 
 }
 
 // ---------------------------------------------------------------- daily challenge
-/** Same 5 moments for everyone today: 2 easy, 2 medium, 1 hard, seeded by the date. */
+/** Same 5 moments for everyone today: 2 easy, 2 medium, 1 hard, seeded by the date. Picked from the
+ *  loaded manifest by stable id, so the order of the manifest doesn't matter. */
 export function dailyMoments(moments: Moment[], day = dayKey()): Moment[] {
   const rnd = mulberry32(hashString(`scan-and-play:${day}`))
+  const sorted = [...moments].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   const take = (d: Difficulty, n: number) =>
     shuffle(
-      moments.filter((m) => m.difficulty === d),
+      sorted.filter((m) => m.difficulty === d),
       rnd,
     ).slice(0, n)
-  return [...take('easy', 2), ...take('medium', 2), ...take('hard', 1)]
+  const picked = [...take('easy', 2), ...take('medium', 2), ...take('hard', 1)]
+  // a difficulty with too few moments: top up from the rest, so the challenge always has 5
+  const rest = shuffle(
+    sorted.filter((m) => !picked.includes(m)),
+    rnd,
+  )
+  return [...picked, ...rest].slice(0, 5)
 }
 
 // ---------------------------------------------------------------- streak

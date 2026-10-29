@@ -1,7 +1,9 @@
 import type { MomentData, Play } from '../types'
+import { MOMENTS_DIR } from '../data/manifest'
+import { validatePlay } from '../data/validate'
 
-// The rest of each play (reception -> pass -> takeover), from plays.json. Only fetched when a
-// replay is watched, so the game itself starts with moments.json alone.
+// The rest of each play (reception -> pass -> takeover), from public/moments/<id>.play.json. Only
+// fetched when a replay is watched, so the game itself starts with the moment files alone.
 export type { Play }
 
 /** A moment with its play appended, plus where the pass and the takeover happen (frame indices). */
@@ -10,17 +12,26 @@ export interface PlayedMoment extends MomentData {
   takeFrame: number
 }
 
-let cache: Promise<Record<string, Play>> | null = null
+const cache = new Map<string, Promise<Play>>()
 
-export function loadPlays(): Promise<Record<string, Play>> {
-  cache ??= fetch('./plays.json')
-    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`plays.json: HTTP ${r.status}`))))
-    .then((d: { plays: Record<string, Play> }) => d.plays)
-    .catch((e) => {
-      cache = null // let a later attempt retry
-      throw e
-    })
-  return cache
+/** The replay data of one moment (validated); rejects when there is none. */
+export function loadPlay(id: string): Promise<Play> {
+  let p = cache.get(id)
+  if (!p) {
+    p = fetch(`${MOMENTS_DIR}/${encodeURIComponent(id)}.play.json`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${id}.play.json: HTTP ${r.status}`))))
+      .then((raw: unknown) => {
+        const v = validatePlay(raw, id)
+        if (!v.ok) throw new Error(`${id}.play.json: ${v.problems.slice(0, 3).join('; ')}`)
+        return v.value
+      })
+      .catch((e) => {
+        cache.delete(id) // let a later attempt retry
+        throw e
+      })
+    cache.set(id, p)
+  }
+  return p
 }
 
 export function withPlay(m: MomentData, play: Play): PlayedMoment {
@@ -34,8 +45,5 @@ export function withPlay(m: MomentData, play: Play): PlayedMoment {
 }
 
 export async function loadPlayedMoment(m: MomentData): Promise<PlayedMoment> {
-  const plays = await loadPlays()
-  const play = plays[m.id]
-  if (!play) throw new Error(`no replay for ${m.id}`)
-  return withPlay(m, play)
+  return withPlay(m, await loadPlay(m.id))
 }

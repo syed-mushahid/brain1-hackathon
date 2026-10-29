@@ -23,7 +23,7 @@ import {
 import { dayKey } from './lib/util'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
-import { loadPlays, withPlay } from './lib/plays'
+import { loadPlay, withPlay } from './lib/plays'
 import { buildUserPlay, proStory, type PlayStory } from './game/userPlay'
 import type { ReplayMode } from './three/Replay3D'
 
@@ -43,6 +43,7 @@ interface Session {
 export default function App() {
   const [data, setData] = useState<{ moments: Moment[] } | null>(null)
   const [error, setError] = useState('')
+  const [progress, setProgress] = useState<[number, number] | null>(null)
   const [profile, setProfileState] = useState<Profile>(loadProfile)
   const [session, setSession] = useState<Session | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
@@ -50,8 +51,9 @@ export default function App() {
   const [replayLoading, setReplayLoading] = useState(false)
 
   useEffect(() => {
-    // validated against the data contract; difficulty from the game's own model (data/load.ts)
-    loadMoments()
+    // the manifest lists the moment files; each is validated against the data contract and
+    // prepared by the game's own model (data/load.ts)
+    loadMoments((done, total) => setProgress([done, total]))
       .then((moments) => (moments.length ? setData({ moments }) : Promise.reject(new Error('no playable moments'))))
       .catch((e) => setError(String(e)))
   }, [])
@@ -73,7 +75,7 @@ export default function App() {
     let queue: Moment[]
     if (kind === 'daily') queue = dailyMoments(data.moments)
     else {
-      // ?moment=m05 forces the first training moment (handy for testing)
+      // ?moment=<id> forces the first training moment (handy for testing)
       const forced = data.moments.find((m) => m.id === new URLSearchParams(location.search).get('moment'))
       queue = [forced ?? pickTraining(profile, data.moments, [])]
     }
@@ -138,8 +140,7 @@ export default function App() {
     const res = session.result
     setReplayLoading(true)
     void loadReplay3D()
-    loadPlays()
-      .then((plays) => plays[current.id] ?? null)
+    loadPlay(current.id)
       .catch(() => null) // no play data: the pro's replay stops at the decision, yours is still simulated
       .then((play) => {
         const pm = who === 'pro' ? play && proStory(withPlay(current, play)) : buildUserPlay(track, res, play)
@@ -155,8 +156,8 @@ export default function App() {
     setProfile({ ...profile, muted: !profile.muted })
   }
 
-  if (error) return <div className="screen center">Could not load moments.json – {error}</div>
-  if (!data) return <div className="screen center">Loading…</div>
+  if (error) return <div className="screen center">Could not load the moments – {error}</div>
+  if (!data) return <div className="screen center">Loading{progress ? ` moments ${progress[0]}/${progress[1]}` : ''}…</div>
 
   if (summary)
     return <Summary s={summary} onHome={() => setSummary(null)} onTraining={() => start('training')} />

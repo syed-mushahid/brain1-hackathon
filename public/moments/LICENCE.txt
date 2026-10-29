@@ -1,0 +1,1 @@
+Contains data from the Deutsche Fußball Liga (DFL), published as open data by Bassek, M. et al. (2025), Scientific Data, doi:10.1038/s41597-025-04505-y. Licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Coordinates transformed (attack normalised left to right).

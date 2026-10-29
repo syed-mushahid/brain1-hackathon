@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "manifest": "tsx scripts/build_manifest.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

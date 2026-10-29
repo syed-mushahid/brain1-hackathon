@@ -1023,13 +1023,21 @@ LICENCE = ('Contains data from the Deutsche Fußball Liga (DFL), published as op
            'Coordinates transformed (attack normalised left to right).')
 
 
+def run_node(here, script, *args):
+    """Run one of the game's TypeScript scripts (via tsx), so the pipeline uses the game's own code."""
+    import subprocess
+    return subprocess.run(['node', '--import', 'tsx', script, *map(str, args)], cwd=here, check=True)
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     default_data = next((d for d in (os.path.join(here, 'data'), os.path.join(here, 'RawData', '28196177'))
                          if glob(os.path.join(d, '*matchinformation*.xml'))), os.path.join(here, 'data'))
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--data', default=default_data)
-    ap.add_argument('--out', default=os.path.join(here, 'moments.json'))
+    ap.add_argument('--out', default=os.path.join(here, 'public', 'moments'),
+                    help='folder for <id>.json + <id>.play.json (default: the app, public/moments)')
+    ap.add_argument('--clean', action='store_true', help='delete the moment files already in --out first')
     ap.add_argument('--previews', default=os.path.join(here, 'previews'))
     ap.add_argument('--cache', default=os.path.join(here, 'cache'))
     ap.add_argument('--n', type=int, default=30)
@@ -1090,40 +1098,36 @@ def main():
             if id(c) in bad:
                 rejected[id(c)] = (f"{c['match_id']} P{c['period']} {c['clock']}", bad[id(c)])
 
-    # 5. outputs: public fields only (the data contract); the game computes every judgement itself
+    # 5. outputs: one file per moment (the data contract: raw facts only) + its replay data. The game
+    #    computes every judgement itself; it finds the files through the manifest (index.json).
+    os.makedirs(args.out, exist_ok=True)
     os.makedirs(args.previews, exist_ok=True)
-    for f in glob(os.path.join(args.previews, '*.png')):
-        os.remove(f)
-    out_moments = []
+    if args.clean:
+        for f in glob(os.path.join(args.out, '*.json')) + glob(os.path.join(args.previews, '*.png')):
+            os.remove(f)
+    out_moments, size = [], 0
     for c in chosen:
         draw_preview({**c, **c['_final']}, os.path.join(args.previews, f"{c['id']}.png"))
-        out_moments.append({k: v for k, v in c.items() if not k.startswith('_')})
-    doc = dict(
-        meta=dict(
-            source='DFL/IDSSE open dataset: 7 Bundesliga matches 2022/23, tracking (25 fps) + event data '
-                   '(Figshare item 28196177)',
-            licence=LICENCE, schema='src/data/moment.schema.json'),
-        moments=out_moments,
-    )
-    with open(args.out, 'w', encoding='utf-8') as fh:
-        json.dump(doc, fh, ensure_ascii=False, separators=(',', ':'))
-    # the rest of every play (for the replays), loaded by the game only when a replay is watched
-    plays_path = os.path.join(os.path.dirname(args.out), 'plays.json')
-    with open(plays_path, 'w', encoding='utf-8') as fh:
-        json.dump(dict(meta=dict(licence=LICENCE), plays={c['id']: c['_play'] for c in chosen}),
-                  fh, ensure_ascii=False, separators=(',', ':'))
-    plays_size = os.path.getsize(plays_path)
-    size = os.path.getsize(args.out)
-    with open(args.out, encoding='utf-8') as fh:   # read back to confirm it is valid
-        n_written = len(json.load(fh)['moments'])
+        mom = {k: v for k, v in c.items() if not k.startswith('_')}
+        out_moments.append(mom)
+        path = os.path.join(args.out, f"{c['id']}.json")
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(mom, fh, ensure_ascii=False, separators=(',', ':'))
+        size += os.path.getsize(path)
+        with open(os.path.join(args.out, f"{c['id']}.play.json"), 'w', encoding='utf-8') as fh:
+            json.dump(c['_play'], fh, ensure_ascii=False, separators=(',', ':'))
+    with open(os.path.join(args.out, 'LICENCE.txt'), 'w', encoding='utf-8') as fh:
+        fh.write(LICENCE + '\n')
+    in_app = os.path.abspath(args.out) == os.path.abspath(os.path.join(here, 'public', 'moments'))
+    if in_app:   # writing straight into the app: refresh the manifest too
+        run_node(here, 'scripts/build_manifest.ts', args.out)
 
     # summary
     print('\n================ SUMMARY ================')
-    print(f'Wrote {args.out}: {n_written} moments, {size:,} bytes ({size / 1e6:.2f} MB), '
-          f're-read OK; previews -> {args.previews}')
-    print(f'Wrote {plays_path}: replay frames for {len(chosen)} moments, {plays_size:,} bytes '
-          f'(median {int(np.median([len(c["_play"]["frames"]) for c in chosen]))} frames = '
-          f'{np.median([len(c["_play"]["frames"]) for c in chosen]) / FPS_OUT:.1f} s after reception)')
+    print(f'Wrote {len(chosen)} moments to {args.out} ({size / 1e6:.2f} MB, + <id>.play.json replays); '
+          f'previews -> {args.previews}')
+    if not in_app:
+        print('  drop them in: copy the .json files into public/moments, then npm run manifest && npm run check')
     print('Moments per match:')
     mc = Counter(m['match_id'] for m in out_moments)
     for m in matches:
