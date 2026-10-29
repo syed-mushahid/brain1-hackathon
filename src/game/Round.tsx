@@ -118,6 +118,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       settled: false, // reveal animation finished: stop redrawing every frame
       kicked: false,
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
+      top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
     }
     sound.whistle(1, 0.22)
@@ -147,6 +148,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       stopLook()
       sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
       const res = evaluate(track, { tap, scans: g.scans })
+      g.top = res.mentioned
       g.reveal = {
         progress: 0,
         tap: res.tap,
@@ -161,6 +163,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         },
         threats: res.threats,
         offsideV: res.offsideV,
+        brave: res.brave && { end: res.brave.end, run: res.brave.run },
       }
       if (tap) {
         sound.kick(0.9)
@@ -360,7 +363,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         v.k += (P.view.k - v.k) * a
         v.tx += (P.view.tx - v.tx) * a
         v.ty += (P.view.ty - v.ty) * a
-        r.draw({ mode: 'reveal', pos, ball, headDir: 0, look: 0, decideLeft: 1, reveal: null, view: v, blend: 1, time: now })
+        r.draw({ mode: 'reveal', pos, ball, headDir: 0, look: 0, decideLeft: 1, reveal: null, view: v, blend: 1, time: now, top: g.top })
         return
       }
       if (g.reveal) {
@@ -388,6 +391,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         decideLeft: g.phase === 'decide' ? Math.max(0, 1 - (now - g.t0) / S.decideMs) : 1,
         reveal: g.reveal,
         view: g.view,
+        top: g.top,
         blend: g.phase === 'decide' ? Math.min(1, (now - g.t0) / DARKEN_MS) : g.phase === 'reveal' ? Math.min(1, (now - g.t0) / LIFT_MS) : 0,
         time: now,
       }

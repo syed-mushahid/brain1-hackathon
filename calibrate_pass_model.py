@@ -4,7 +4,8 @@ The game (src/game/space.ts + value.ts) turns a race margin into P(success) with
 curve (Spearman 2017):  P = 1 / (1 + exp(-pi / (sqrt(3) * sigma) * (slack + bias))).
 `slack` = how much later than the ball (or, at the target, than the receiver) the quickest
 opponent can get to the ball's path, with the game's race settings (reaction 0.5 s opponents /
-0.4 s teammates, 7 m/s sprint, 15 m/s ball, 1 m reach, passes > 30 m lofted).
+0.4 s teammates, 7 m/s sprint, 15 m/s ball, 1 m reach, passes > 30 m lofted); an opponent already
+within reach of the path when the ball passes him (a static blocker) gives BLOCKED_SLACK.
 
 This script measures that slack for every real pass 2 the pipeline finds (state at the moment
 the pass was played), and fits bias and sigma to whether the ball really reached a teammate:
@@ -28,6 +29,7 @@ import extract_moments as em
 BALL_SPEED, LOFT_FROM, LOFT_LANDING = 15.0, 30.0, 0.2
 REACT_OPP, REACT_MATE, RUN_SPEED, REACH = 0.5, 0.4, 7.0, 1.0
 START_M, STEP_M, FPS_RAW = 1.5, 0.5, 25
+BLOCKER_SLACKS = [None, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0]   # tried for space.ts BLOCKED_SLACK (None = no rule)
 
 
 def slack_of(cal, target, recv):
@@ -55,9 +57,34 @@ def slack_of(cal, target, recv):
         s = s0
         while s <= L + 1e-6:
             q = you + u * s
-            tb = max(s / BALL_SPEED, t_end) if s >= L - STEP_M else s / BALL_SPEED
-            sl = time_to(i, q) - tb
+            t_ball = s / BALL_SPEED
+            tb = max(t_ball, t_end) if s >= L - STEP_M else t_ball
+            sl = time_to(i, q) - tb   # (static blockers are applied in fit(), with a fitted slack)
             best = sl if best is None or sl < best else best
+            s += STEP_M
+    return best
+
+
+def static_gap(cal, target):
+    """Closest any opponent (drifting with his velocity while he reacts) is to the ball as it passes (m)."""
+    pos = np.array([np.asarray(p, float) for p in cal['pos']])
+    prev = np.array([np.asarray(p, float) for p in cal['prev']])
+    att = np.array(cal['att'])
+    vel = (pos - prev) * (FPS_RAW / 5)
+    you = pos[cal['passer']]
+    target = np.asarray(target, float)
+    L = float(np.linalg.norm(target - you))
+    if L < 1e-3:
+        return None
+    u = (target - you) / L
+    s0 = min(L * (1 - LOFT_LANDING) if L > LOFT_FROM else START_M, L)
+    best = None
+    for i in np.flatnonzero(~att):
+        s = s0
+        while s <= L + 1e-6:
+            q = you + u * s
+            d = float(np.linalg.norm(q - pos[i] - vel[i] * min(s / BALL_SPEED, REACT_OPP)))
+            best = d if best is None or d < best else best
             s += STEP_M
     return best
 
@@ -83,33 +110,52 @@ def collect(data_dir, cache_dir):
             else:
                 continue
             if sl is not None:
-                rows.append((sl, y))
+                tgt = cal['take_pos'] if y else cal['pos'][cal['intended']]
+                rows.append((sl, y, static_gap(cal, tgt)))
         print(f'  {m.match_id}: {len(rows)} passes so far')
     return rows
 
 
 def fit(rows):
-    x = np.array([r[0] for r in rows])
+    raw = np.array([r[0] for r in rows])
     y = np.array([r[1] for r in rows])
+    gaps = np.array([r[2] for r in rows], float)
+    blocked = gaps <= REACH
+    bins = [0, 0.5, 1.0, 1.5, 2.0, 3.0, 99]
+    by_gap = {f'{lo}-{hi} m': (int(((gaps >= lo) & (gaps < hi)).sum()),
+                               round(float(y[(gaps >= lo) & (gaps < hi)].mean()), 2) if ((gaps >= lo) & (gaps < hi)).any() else None)
+              for lo, hi in zip(bins[:-1], bins[1:])}
 
-    def logloss(bias, sigma):
+    def logloss(bias, sigma, x=None):
+        x = raw if x is None else x
         k = math.pi / (math.sqrt(3) * sigma)
         p = np.clip(1 / (1 + np.exp(-k * (x + bias))), 1e-9, 1 - 1e-9)
         return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
-    grid = [(b, s, logloss(b, s)) for b in np.arange(-1.0, 3.01, 0.05) for s in np.arange(0.2, 3.01, 0.05)]
-    b, s, ll = min(grid, key=lambda g: g[2])
+    # static blocker: an opponent within reach of the path gets a fixed slack; fit that value too
+    fits = []
+    for bs in BLOCKER_SLACKS:
+        xx = raw if bs is None else np.where(blocked, np.minimum(raw, bs), raw)
+        g = min(((b, s, logloss(b, s, xx)) for b in np.arange(-1.0, 4.01, 0.05) for s in np.arange(0.2, 4.01, 0.05)),
+                key=lambda t: t[2])
+        fits.append((bs, *g))
+        print(f'  blocker slack {bs}: bias {g[0]:.2f} sigma {g[1]:.2f} log-loss {g[2]:.4f}')
+    bs, b, s, ll = min(fits, key=lambda f: f[3])
+    x = raw if bs is None else np.where(blocked, np.minimum(raw, bs), raw)
     r = y.mean()
     base = float(-(r * math.log(r) + (1 - r) * math.log(1 - r)))
-    spearman = logloss(0.0, 0.45)
-    b45 = min(((bb, logloss(bb, 0.45)) for bb in np.arange(-1.0, 3.01, 0.05)), key=lambda g: g[1])
+    spearman = logloss(0.0, 0.45, x)
+    b45 = min(((bb, logloss(bb, 0.45, x)) for bb in np.arange(-1.0, 4.01, 0.05)), key=lambda g: g[1])
     # how well the slack separates completed from lost passes (AUC, rank-based)
     order = np.argsort(x)
     ranks = np.empty(len(x))
     ranks[order] = np.arange(1, len(x) + 1)
     n1, n0 = y.sum(), len(y) - y.sum()
     auc = float((ranks[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+    print('completion rate by the closest static opponent to the path (n, rate):', by_gap)
     return dict(n=int(len(rows)), completed=int(n1), lost=int(n0), base_rate=round(float(r), 3),
+                blocked_passes=int(blocked.sum()), blocked_but_completed=int((blocked & (y == 1)).sum()),
+                completion_by_static_gap=by_gap, fit_blocker_slack_s=bs,
                 logloss_base_rate=round(base, 3), logloss_spearman_sigma045=round(spearman, 3),
                 spearman_sigma045_best_bias=round(float(b45[0]), 2), logloss_spearman_best_bias=round(b45[1], 3),
                 fit_bias_s=round(float(b), 2), fit_sigma_s=round(float(s), 2), logloss_fit=round(ll, 3),

@@ -9,7 +9,9 @@
 //                 (pass_model_calibration.json): bias 1.0 s, sigma 0.95 s, log-loss 0.299 vs 0.375
 //                 for the base rate, AUC of the slack 0.86. (Our race model gets defenders to the ball
 //                 about a second too early; the bias puts that right.)
-//   EV          = P * (EPV(target) - EPV(ball)) - (1 - P) * EPV_opponent(target)
+//   EV          = P * (EPV(target) - EPV(ball)) - (1 - P) * k * EPV_opponent(target)
+//                 k = risk aversion: how much more a lost ball hurts than its plain EPV says, fitted so
+//                 the pros' real passes come within 5 points of the best option in about half the moments
 //   EPV         = Shaw's EPV grid (epvGrid.ts, MIT); for the opponents the same grid mirrored
 //   points      = EV rescaled linearly to 0-100 (EV_LO -> 0, EV_HI -> 100, clipped) for display/scoring
 //
@@ -60,16 +62,20 @@ export interface PassEV {
   points: number
 }
 
-// Display scale: EV_LO -> 0 and EV_HI -> 100. Set from the spread of all options (passes to feet and
-// the spots searched for passes into space, 7,384 in the 42 moments): about the 2nd and 98th percentiles.
-// A pass that keeps the attack's value unchanged (EV 0) scores 70.
-export const EV_LO = -0.035
-export const EV_HI = 0.015
-export const toPoints = (ev: number) => Math.round(1000 * Math.max(0, Math.min(1, (ev - EV_LO) / (EV_HI - EV_LO)))) / 10
+/**
+ * k (risk aversion) and the display scale lo -> 0, hi -> 100 (about the 2nd and 98th percentiles of
+ * the EV of all options and searched spots in the 42 moments, for this k). Fitted by
+ * scripts/fit_risk_aversion.mjs; an object so that script can try other values.
+ */
+// fitted (with best.ts SEARCH): k alone tops out at 32 % of the pros' passes within 5 points of the
+// best (k = 8); with a 12-point premium for passes into space and spots only along a running teammate's
+// run, k = 3 is the smallest k that reaches 40 %: 16 / 37 = 43 %, best into space in 11 / 42 moments
+export const VALUE = { k: 3, lo: -0.0567, hi: 0.0221 }
+export const toPoints = (ev: number) => Math.round(1000 * Math.max(0, Math.min(1, (ev - VALUE.lo) / (VALUE.hi - VALUE.lo)))) / 10
 
 export function passEV(ball: [number, number], target: [number, number], slack: number): PassEV {
   const p = pSuccess(slack)
   const epvTarget = epvUs(target)
-  const ev = p * (epvTarget - epvUs(ball)) - (1 - p) * epvThem(target)
+  const ev = p * (epvTarget - epvUs(ball)) - (1 - p) * VALUE.k * epvThem(target)
   return { p, epvTarget, ev, points: toPoints(ev) }
 }

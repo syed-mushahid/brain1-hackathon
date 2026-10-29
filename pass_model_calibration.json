@@ -3,6 +3,35 @@
  "completed": 868,
  "lost": 123,
  "base_rate": 0.876,
+ "blocked_passes": 163,
+ "blocked_but_completed": 117,
+ "completion_by_static_gap": {
+  "0-0.5 m": [
+   71,
+   0.73
+  ],
+  "0.5-1.0 m": [
+   92,
+   0.71
+  ],
+  "1.0-1.5 m": [
+   115,
+   0.78
+  ],
+  "1.5-2.0 m": [
+   98,
+   0.88
+  ],
+  "2.0-3.0 m": [
+   169,
+   0.88
+  ],
+  "3.0-99 m": [
+   446,
+   0.96
+  ]
+ },
+ "fit_blocker_slack_s": null,
  "logloss_base_rate": 0.375,
  "logloss_spearman_sigma045": 0.537,
  "spearman_sigma045_best_bias": 0.55,

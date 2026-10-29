@@ -1,8 +1,10 @@
 import type { Team } from '../types'
 import { idxOf, posAt, toPortrait, type Track } from './track'
 import { explain, type Breakdown } from './explain'
-import { findBestPass, SAME_VALUE, samePass, scoredOptions } from './best'
-import { arrivalTime, gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
+import { findBestPass, findBravePass, SAME_VALUE, samePass, scoredOptions } from './best'
+import { RACE } from './space'
+import { SLACK_BIAS } from './value'
+import { arrivalTime, offsideBy, passKind, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
 import type { PassOption } from '../types'
 import { brainScore, decisionScore, memoryScore, scanScore, spaceMemoryScore, type Scores } from './scoring'
 import { RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
@@ -37,8 +39,16 @@ export interface RoundResult {
   space: SpaceOutcome | null
   /** offside line (portrait v) when any teammate was beyond it as you passed, else null */
   offsideV: number | null
+  /** a pass worth more than the best but below 60 % to arrive (not shown when it's the one you played) */
+  brave: { idx: number; end: [number, number]; run: [number, number][] | null; value: number; p: number } | null
+  /** your pass to a teammate's feet that the race says is cut out (who took it), else null */
+  lost: SpaceOutcome | null
+  /** your pass's chance to arrive (expected-value model), null without a pass */
+  p: number | null
+  /** players the feedback is about: drawn on top, never nudged aside */
+  mentioned: number[]
   /** opponents who came close to cutting out your pass or the pro's (drawn as warnings) */
-  threats: { from: [number, number]; at: [number, number] }[]
+  threats: { idx: number; from: [number, number]; at: [number, number] }[]
   /** the "Why? / Your scan / Match" panels */
   breakdown: Breakdown
   headline: string
@@ -71,11 +81,14 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   // the best pass may be to a teammate's feet or into space (best.ts)
   const best = findBestPass(tr)
   const bestIdx = best.idx
-  const bestNum = tr.nums[bestIdx]
   const [yu, yv] = posAt(tr, tr.rec, tr.youIdx)
   const [bu, bv] = posAt(tr, tr.rec, bestIdx)
   const where = whereIs(yu, yv, bu, bv)
-  const bestDesc = best.intoSpace ? `A through ball to #${bestNum}` : `#${bestNum}`
+  // "through ball" only when he runs on behind the defensive line, else "a pass into space for"
+  const describe = (idx: number, end: [number, number], intoSpace: boolean, n = tr.nums[idx]) =>
+    !intoSpace ? `#${n}` : passKind(tr, idx, end) === 'through ball' ? `A through ball to #${n}` : `A pass into space for #${n}`
+  const bestDesc = describe(bestIdx, best.end, best.intoSpace)
+  const brave = findBravePass(tr)
   const proPid = m.actual.intended_pid ?? m.actual.target_pid
   const proIdx = idxOf(tr, proPid)
   const tk = m.actual.taker
@@ -167,6 +180,22 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const toFeet = near.idx >= 0 && near.dist <= toProEnd
   const space: SpaceOutcome | null = input.tap && !toFeet ? readSpace(input.tap) : null
   const snapped = space ? { idx: -1, dist: Infinity } : near
+  // a pass to feet is decided by its own chance to arrive (the same number as its value): below
+  // 50 % the opponent who comes closest to cutting it out takes it where he meets the ball
+  const feetOpt = snapped.idx >= 0 ? (options.find((o) => o.pid === tr.pids[snapped.idx]) ?? null) : null
+  const feetRisk = feetOpt && !feetOpt.offside && (feetOpt.p ?? 1) < 0.5 ? passRisk(tr, posAt(tr, tr.rec, snapped.idx)) : null
+  const lost: SpaceOutcome | null = feetRisk
+    ? {
+        end: feetRisk.at,
+        takerIdx: feetRisk.idx,
+        team: 'def',
+        run: [posAt(tr, tr.rec, feetRisk.idx), feetRisk.at],
+        t: Math.hypot(feetRisk.at[0] - posAt(tr, tr.rec, tr.youIdx)[0], feetRisk.at[1] - posAt(tr, tr.rec, tr.youIdx)[1]) / RACE.ballSpeed,
+        rivalIdx: snapped.idx,
+        margin: -(feetRisk.slack + SLACK_BIAS),
+        option: null,
+      }
+    : null
   const tapDist = snapped.idx >= 0 ? snapped.dist : null
   // an intercepted pass still had its chance: value it as a pass to your quickest teammate there
   // (expected value: P(success) is low, so is the value); out of play / offside = nothing
@@ -188,7 +217,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       : null
   const threats = [myRisk, proRisk]
     .filter((r): r is Risk => r !== null && riskLevel(r.slack) === 'high')
-    .map((r) => ({ from: posAt(tr, tr.rec, r.idx), at: r.at }))
+    .map((r) => ({ idx: r.idx, from: posAt(tr, tr.rec, r.idx), at: r.at }))
   // each pass as (receiver, end point): two passes are the same when those match (best.ts)
   const proPass =
     m.actual.outcome === 'received' && takerIdx >= 0
@@ -202,6 +231,13 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       : snapped.idx >= 0
         ? { idx: snapped.idx, end: posAt(tr, tr.rec, snapped.idx) }
         : null
+  // your pass's chance to arrive (to feet, into space, or the one that was cut out)
+  const myOpt: PassOption | null =
+    snapped.idx >= 0
+      ? (options.find((o) => o.pid === tr.pids[snapped.idx]) ?? null)
+      : (space?.option ?? (lostTo >= 0 ? optionAt(tr, lostTo, space!.end) : null))
+  const myP = myOpt?.p ?? null
+  const mineIsBrave = !!myPass && !!brave && samePass(myPass, brave) && (chosenValue ?? 0) >= best.o.value + 0.5
   // the same pass as the best = same receiver and spot, and (nearly) the same value
   const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - SAME_VALUE
   const mineIsBest =
@@ -222,6 +258,21 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     tapDist,
     bestIdx,
     best: { idx: bestIdx, end: best.end, run: best.run, alone: !proIsBest && !mineIsBest },
+    brave: brave && !mineIsBrave ? { idx: brave.idx, end: brave.end, run: brave.run, value: brave.o.value, p: brave.o.p ?? 1 } : null,
+    lost,
+    p: myP,
+    mentioned: [
+      tr.youIdx,
+      bestIdx,
+      snapped.idx,
+      takerIdx,
+      proIdx,
+      space?.takerIdx ?? -1,
+      space?.rivalIdx ?? -1,
+      lost?.takerIdx ?? -1,
+      brave?.idx ?? -1,
+      ...threats.map((t) => t.idx),
+    ].filter((i, k, a) => i >= 0 && a.indexOf(i) === k),
     proEnd,
     run,
     space,
@@ -236,6 +287,8 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       proIsBest,
       mineIsBest,
       mineIsPro,
+      brave: mineIsBrave ? null : brave,
+      myP,
     }),
   }
 
@@ -249,24 +302,31 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const proFound = proIsBest ? ' The pro found it.' : ''
   if (space?.offside) return offsideMsg(space.takerIdx)
   if (!input.tap) return { ...base, headline: 'Too slow!', detail: bestLine + proFound, tone: 'bad' }
-  // what happened to your pass into space (the race)
+  // what happened to your pass: the race, worded by its chance to arrive (so "close race" ~ 40-60 %)
+  const name = (i: number) => `${tr.att[i] ? '' : 'red '}#${tr.nums[i]}`
+  const pTxt = myP === null ? '' : ` (${Math.round(myP * 100)}% chance to arrive)`
   let ran = ''
   if (space) {
-    const name = (i: number) => `${tr.att[i] ? '' : 'red '}#${tr.nums[i]}`
-    const race =
-      space.rivalIdx >= 0 && Number.isFinite(space.margin)
-        ? space.margin < 0.05
-          ? `in a dead heat with ${name(space.rivalIdx)}`
-          : `${gap(space.margin)} before ${name(space.rivalIdx)}`
-        : 'with nobody else close'
+    const rival = space.rivalIdx >= 0 && Number.isFinite(space.margin) ? name(space.rivalIdx) : null
     if (space.takerIdx < 0)
       return { ...base, headline: 'Out of play', detail: `Nobody could reach your pass before it crossed the line. ${bestLine}${proFound}`, tone: 'bad' }
     if (space.team === 'def')
-      return { ...base, headline: 'Intercepted!', detail: `${name(space.takerIdx)} got to your pass ${race}. ${bestLine}${proFound}`.replace(/^r/, 'R'), tone: 'bad' }
-    ran = space.asPro ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match. ` : `#${tr.nums[space.takerIdx]} ran onto it ${race}. `
+      return { ...base, headline: 'Intercepted!', detail: `${cap(name(space.takerIdx))} ${raceLost(myP)} your pass${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
+    ran = space.asPro
+      ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match${myP !== null && myP < 0.5 ? ` – although the model gave it only ${Math.round(myP * 100)}%` : ''}. `
+      : `#${tr.nums[space.takerIdx]} ran onto it ${raceWon(myP, rival)}${pTxt}. `
   } else if (options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
+  else if (lost && lost.takerIdx >= 0)
+    return { ...base, headline: 'Intercepted!', detail: `${cap(name(lost.takerIdx))} ${raceLost(myP)} your pass to #${tr.nums[snapped.idx]}${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
 
   const v = chosenValue ?? 0
+  if (mineIsBrave)
+    return {
+      ...base,
+      headline: 'Brave pass!',
+      detail: `${ran}Worth more than the safe best option, but only a ${Math.round((myP ?? 0) * 100)}% chance to arrive. ${bestDesc} ${where} was the safer choice.`,
+      tone: 'great',
+    }
   if (mineIsBest && mineIsPro) return { ...base, headline: 'Same as the pro!', detail: `${ran}And it was the best option. Elite.`, tone: 'great' }
   if (mineIsBest && proIsBest)
     return { ...base, headline: 'As good as the pro!', detail: `${ran}You and the pro found different passes that were equally good.`, tone: 'great' }
@@ -290,4 +350,16 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     detail: `${ran}${space ? `${bestDesc} ${where} was the best option – ${hint}.` : `${cap(hint)}.`}${proIsBest ? ' The pro found it.' : ` ${proLine}`}`,
     tone: space && partial.decision >= 75 ? 'great' : space || partial.decision >= 70 ? 'ok' : 'bad',
   }
+}
+
+/** "ran onto it ..." by the chance to arrive: a close race only when it really was close */
+function raceWon(p: number | null, rival: string | null): string {
+  if (p === null || !rival || p >= 0.85) return 'with time to spare'
+  if (p >= 0.6) return `ahead of ${rival}`
+  return `in a close race with ${rival}`
+}
+
+/** "<opponent> ... your pass" by the chance to arrive */
+function raceLost(p: number | null): string {
+  return p !== null && p >= 0.4 ? 'won a close race to' : 'got to'
 }

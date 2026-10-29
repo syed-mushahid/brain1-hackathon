@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import type { Moment, MomentsFile } from './types'
 import { buildTrack } from './game/track'
+import { momentDifficulty } from './game/difficulty'
 import { Round, type RoundSettings } from './game/Round'
 import type { RoundResult } from './game/evaluate'
 import { ResultSheet } from './components/ResultSheet'
@@ -51,7 +52,8 @@ export default function App() {
   useEffect(() => {
     fetch('./moments.json')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setData)
+      // difficulty from the game's own pass values (difficulty.ts), not the pipeline's heuristic
+      .then((d: MomentsFile) => setData({ ...d, moments: d.moments.map((m) => ({ ...m, difficulty: momentDifficulty(buildTrack(m)) })) }))
       .catch((e) => setError(String(e)))
   }, [])
 

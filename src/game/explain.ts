@@ -2,15 +2,16 @@
 //   why one pass was better than another (from the option values in moments.json),
 //   what your scanning did, and which real match / players the moment comes from.
 import type { Moment, PassOption, Team } from '../types'
-import { FPS, idxOf, posAt, type Track } from './track'
+import { FPS, idxOf, posAt, toPortrait, type Track } from './track'
 import { scanParts } from './scoring'
 import { scoredOptions, type BestPass } from './best'
-import { gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
+import { VALUE } from './value'
+import { offsideBy, offsideLineV, OFFSIDE_TOL_M, passKind, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
 import { lookWord, RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
 export interface CompareCol {
   label: string
-  tone: 'mine' | 'pro' | 'best'
+  tone: 'mine' | 'pro' | 'best' | 'brave'
   o: PassOption | null
   /** closest opponent to cutting the pass out: text for the table, and how worrying it is */
   risk: { text: string; level: 'low' | 'medium' | 'high' } | null
@@ -26,6 +27,10 @@ export interface PassFacts {
   mineIsPro: boolean
   /** a pass into space: the teammate you aimed for and how far the tap was from where he was heading */
   memory: { num: number; dist: number } | null
+  /** a pass worth more than the best but below 60 % to arrive (null if none, or if you played it) */
+  brave: BestPass | null
+  /** your pass's chance to arrive */
+  myP: number | null
 }
 
 
@@ -131,9 +136,20 @@ export function explain(
   const myOpt = spaceOpt ?? mine
   const { proIsBest, mineIsBest, mineIsPro } = facts
   // passes as noun phrases
-  const myName = spaceOpt ? `your through ball to #${spaceOpt.num}` : mine ? `your pass to #${mine.num}` : 'your pass'
-  const proName = pro ? `the pro’s ${proSpace ? 'through ball' : 'pass'} to #${pro.num}` : 'the pro’s pass'
-  const bestName = B.intoSpace ? `a through ball to ${bestN}` : `a pass to ${bestN}`
+  // "through ball" only when the receiver runs on behind the defensive line, else "pass into space"
+  const kindName = (whose: string, idx: number, end: [number, number], intoSpace: boolean, n: number) =>
+    !intoSpace
+      ? `${whose} pass to #${n}`
+      : passKind(tr, idx, end) === 'through ball'
+        ? `${whose} through ball to #${n}`
+        : `${whose} pass into space for #${n}`
+  const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
+  const myName = space && spaceOpt ? kindName('your', space.takerIdx, space.end, true, spaceOpt.num) : mine ? `your pass to #${mine.num}` : 'your pass'
+  const proName = pro ? kindName('the pro’s', idxOf(tr, pro.pid), proEnd, proSpace, pro.num) : 'the pro’s pass'
+  const bestName = kindName('a', bestIdx, B.end, B.intoSpace, best.num)
+  const Bv = facts.brave
+  const braveName = Bv ? kindName('a', Bv.idx, Bv.end, Bv.intoSpace, Bv.o.num) : ''
+  const pTxt = (p: number | null | undefined) => (p === null || p === undefined ? '' : ` (${Math.round(p * 100)}% chance to arrive)`)
   const riskLine = (r: Risk | null, name: string, real: boolean) => {
     const level = r ? riskLevel(r.slack) : 'low'
     if (!r || level === 'low') return null
@@ -153,8 +169,8 @@ export function explain(
     title = `Why ${who(space.takerIdx)} intercepted your pass`
     points = [
       rival >= 0
-        ? `${who(space.takerIdx)} got to the ball after ${space.t.toFixed(1)} s – ${gap(space.margin)} before your quickest teammate, ${who(rival)}`
-        : `${who(space.takerIdx)} got to the ball after ${space.t.toFixed(1)} s – none of your teammates could reach it`,
+        ? `${who(space.takerIdx)} got to the ball before your quickest teammate, ${who(rival)}${pTxt(facts.myP)}`
+        : `${who(space.takerIdx)} got to the ball – none of your teammates could reach it`,
       strengths(best, bestName),
     ]
   } else {
@@ -164,11 +180,11 @@ export function explain(
       points.push(
         space.asPro
           ? `Your tap matched the pro’s pass, so you get what really happened: #${spaceOpt.num} ran onto it`
-          : rival >= 0
-            ? space.margin < 0.05
-              ? `#${spaceOpt.num} beat ${who(rival)} to it by a split second – very risky`
-              : `#${spaceOpt.num} reached the ball after ${space.t.toFixed(1)} s – ${gap(space.margin)} before the quickest opponent, ${who(rival)}`
-            : `#${spaceOpt.num} reached the ball after ${space.t.toFixed(1)} s – no opponent could get there`,
+          : rival >= 0 && (spaceOpt.p ?? 1) < 0.6
+            ? `#${spaceOpt.num} beat ${who(rival)} to it in a close race${pTxt(spaceOpt.p)}`
+            : rival >= 0
+              ? `#${spaceOpt.num} reached the ball after ${space.t.toFixed(1)} s, ahead of the quickest opponent, ${who(rival)}${pTxt(spaceOpt.p)}`
+              : `#${spaceOpt.num} reached the ball after ${space.t.toFixed(1)} s – no opponent could get there`,
       )
     }
     if (myOpt && mineIsBest && mineIsPro) {
@@ -200,7 +216,11 @@ export function explain(
       `Memory: you aimed ${facts.memory.dist.toFixed(1)} m from where #${facts.memory.num} would be when the ball arrived (3 m or closer = full marks)`,
     )
   if (B.intoSpace && !mineIsBest && !proIsBest)
-    points.push(`The best pass was into space: #${best.num} could run onto it, ${gap(Math.max(0, B.t))} after the pass`)
+    points.push(`The best was ${bestName}: #${best.num} could run onto it ${B.t.toFixed(1)} s after the pass${pTxt(best.p)}`)
+  if (Bv)
+    points.push(
+      `Brave option: ${braveName} was worth more (${Math.round(Bv.o.value)} vs ${Math.round(best.value)}) but had only a ${Math.round((Bv.o.p ?? 0) * 100)}% chance to arrive – the best option needs 60%+`,
+    )
   const risks = [space?.asPro ? null : riskLine(facts.mine, myName, false), riskLine(facts.pro?.risk ?? null, proName, true)].filter(
     (x): x is string => x !== null,
   )
@@ -213,7 +233,7 @@ export function explain(
     risks.push(`Offside when you passed: ${offside.join(', ')} beyond the offside line – a pass to them is a free kick for the opponents`)
   points.push(...risks, proLine)
   const note =
-    `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, on a 0–100 scale (70 = no change). ` +
+    `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, with a lost ball counting ${VALUE.k}× (risk aversion, fitted on the pros’ choices), on a 0–100 scale (72 = no change). ` +
     `P comes from a race model, Spearman-style (2017): the ball travels at ${RACE.ballSpeed} m/s (over ${RACE.loftFrom} m it’s lofted); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
     `Goal chances: Expected Possession Value grid by Laurie Shaw (LaurieOnTracking, MIT licence). ` +
     `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes. ` +
@@ -236,6 +256,13 @@ export function explain(
   if (!mineIsPro)
     cols.push({ label: pro ? `Pro ${run(pro, proSpace)}${proIsBest ? ' · best' : ''}` : 'Pro', tone: 'pro', o: pro, risk: riskCell(facts.pro?.risk ?? null) })
   if (!mineIsBest && !proIsBest) cols.push({ label: `Best ${run(best, B.intoSpace)}`, tone: 'best', o: best, risk: bestRisk })
+  if (Bv)
+    cols.push({
+      label: `Brave ${run(Bv.o, Bv.intoSpace)}`,
+      tone: 'brave',
+      o: Bv.o,
+      risk: riskCell(Bv.intoSpace ? passRisk(tr, Bv.end, Bv.t) : passRisk(tr, posAt(tr, tr.rec, Bv.idx))),
+    })
 
   // ---- scan
   const youIdx = tr.youIdx

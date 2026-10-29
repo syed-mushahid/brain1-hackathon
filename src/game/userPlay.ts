@@ -36,7 +36,8 @@ export function proStory(m: PlayedMoment): StoryMoment {
 export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): StoryMoment | null {
   const m: Moment = tr.m
   const rec = tr.rec
-  const sp = res.space
+  // a pass into space, or a pass to feet the race says was cut out: replay that race
+  const sp = res.space ?? res.lost
   // your tap was the pro's pass: what really happened
   if (sp?.asPro && play) {
     const real = proStory(withPlay(m, play))

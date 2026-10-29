@@ -13,7 +13,7 @@
 // should name the player who really won the ball (see RACE).
 import type { PassOption, Team } from '../types'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
-import { passEV } from './value'
+import { passEV, pSuccess, SLACK_BIAS } from './value'
 
 /** race margin used when no opponent can get near the pass at all (P(success) ~ 1) */
 export const NO_OPPONENT_S = 3
@@ -86,22 +86,44 @@ export function offsideLineV(tr: Track): number {
 /** metres a teammate is beyond the offside line (> 0 = offside) */
 export const offsideBy = (tr: Track, i: number, lineV = offsideLineV(tr)) => lineV - posAt(tr, tr.rec, i)[1]
 
-/** Everyone's sprint time to any point, from their true position and velocity at reception. */
+/**
+ * Everyone's sprint time to any point, from their true position and velocity at reception.
+ * blocks(i, q, t): opponent i is already in the way - while he is still reacting he keeps drifting
+ * with his velocity, and if that puts him within reach of the ball's path point q when the ball
+ * gets there (time t), the pass is blocked whatever his reaction time ("static blocker").
+ */
 function race(tr: Track, P: RaceParams) {
   const f = tr.rec
   const you = posAt(tr, f, tr.youIdx)
   const react = (i: number) => (tr.att[i] ? P.reactMates : P.react)
   const starts: [number, number][] = []
+  const now: [number, number][] = []
+  const vel: [number, number][] = []
   for (let i = 0; i < tr.n; i++) {
     const a = posAt(tr, Math.max(0, f - 2), i)
     const b = posAt(tr, f, i)
-    const k = (FPS / Math.min(2, f || 1)) * react(i) // keeps running the same way while he reacts
-    starts.push([b[0] + (b[0] - a[0]) * k, b[1] + (b[1] - a[1]) * k])
+    const k = FPS / Math.min(2, f || 1)
+    now.push(b)
+    vel.push([(b[0] - a[0]) * k, (b[1] - a[1]) * k])
+    starts.push([b[0] + vel[i][0] * react(i), b[1] + vel[i][1] * react(i)]) // keeps running the same way while he reacts
   }
   const timeTo = (i: number, q: [number, number]) =>
     react(i) + Math.max(0, Math.hypot(q[0] - starts[i][0], q[1] - starts[i][1]) - P.reach) / P.runSpeed
-  return { you, starts, timeTo }
+  const blocks = (i: number, q: [number, number], t: number) => {
+    const d = Math.min(t, react(i))
+    return Math.hypot(q[0] - now[i][0] - vel[i][0] * d, q[1] - now[i][1] - vel[i][1] * d) <= P.reach
+  }
+  return { you, starts, timeTo, blocks }
 }
+
+/**
+ * Static blockers: an opponent already within reach of the ball's path as it passes him gets this
+ * race margin (s), whatever his reaction time; null = rule off. calibrate_pass_model.py fitted it on
+ * 991 real passes: every value made the fit worse (no rule 0.299 log-loss, -0.5 s 0.302, -1 s 0.307,
+ * -3 s "blocked" 0.331) - 73 % of real passes with an opponent within 0.5 m of the path still arrived
+ * (96 % with nobody within 3 m), and the race margin already covers that. So it is off.
+ */
+export const BLOCKER_SLACK: number | null = null
 
 /** Where on the path to `target` (length L) the ball can first be reached, by distance from "you". */
 const reachableFrom = (L: number, P: RaceParams) => (L > P.loftFrom ? L * (1 - LOFT_LANDING) : START_M)
@@ -129,7 +151,7 @@ export interface Risk {
 }
 
 export function passRisk(tr: Track, target: [number, number], tRecv?: number, P: RaceParams = RACE): Risk | null {
-  const { you, timeTo } = race(tr, P)
+  const { you, timeTo, blocks } = race(tr, P)
   const L = Math.hypot(target[0] - you[0], target[1] - you[1])
   if (L < 1e-3) return null
   const ux = (target[0] - you[0]) / L
@@ -140,7 +162,8 @@ export function passRisk(tr: Track, target: [number, number], tRecv?: number, P:
     if (tr.att[i]) continue
     for (let s = Math.min(reachableFrom(L, P), L); s <= L + 1e-6; s += STEP_M) {
       const q: [number, number] = [you[0] + ux * s, you[1] + uy * s]
-      const slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(s / P.ballSpeed, tEnd) : s / P.ballSpeed)
+      let slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(s / P.ballSpeed, tEnd) : s / P.ballSpeed)
+      if (BLOCKER_SLACK !== null && blocks(i, q, s / P.ballSpeed)) slack = Math.min(slack, BLOCKER_SLACK)
       if (!best || slack < best.slack) best = { idx: i, slack, at: q }
     }
   }
@@ -188,16 +211,16 @@ export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: n
   }
 }
 
+/**
+ * What happens to a pass to `target`. One calculation decides value and outcome together:
+ *   1. who on your team gets to it: the quickest teammate to the spot (for a ball rolling out of
+ *      play: the first one who can stop it before the line), and when;
+ *   2. P(success) of exactly that pass (passRisk -> pSuccess, as in the value);
+ *   3. P >= 0.5: he collects it; P < 0.5: the opponent who comes closest to cutting it out
+ *      (passRisk) takes it where he meets the ball. Nobody reaches a ball rolling out: out of play.
+ * So a pass is completed exactly when it is more likely than not to arrive.
+ */
 export function simulateSpacePass(tr: Track, target: [number, number], P: RaceParams = RACE): SpaceOutcome {
-  // teammates go for the spot you aimed at; only when that race is lost may one of them stop the
-  // ball on its way there (before the opponent who would win it)
-  const aimed = race1(tr, target, P, false)
-  if (aimed.team === 'att') return aimed
-  const onWay = race1(tr, target, P, true)
-  return onWay.team === 'att' ? onWay : aimed
-}
-
-function race1(tr: Track, target: [number, number], P: RaceParams, matesOnPath: boolean): SpaceOutcome {
   const { you, starts, timeTo } = race(tr, P)
   // ball path, cut at the touchline / goal line
   const dx = target[0] - you[0]
@@ -214,56 +237,57 @@ function race1(tr: Track, target: [number, number], P: RaceParams, matesOnPath: 
     }
   }
   const rests = pathL >= L - 1e-6 // the ball stops at the tap point (it is on the pitch)
-  const reachFrom = reachableFrom(L, P)
   const at = (s: number): [number, number] => [you[0] + ux * s, you[1] + uy * s]
 
-  // earliest time each player can have the ball, and where
-  const T = new Array<number>(tr.n).fill(Infinity)
-  const Q: [number, number][] = new Array(tr.n)
+  // 1. your teammate who gets there first
+  let w = -1
+  let T = Infinity
+  let Q: [number, number] = at(pathL)
   for (let i = 0; i < tr.n; i++) {
-    if (i === tr.youIdx) continue
-    const onPath = !tr.att[i] || matesOnPath || !rests // (a teammate may stop a ball rolling out of play)
-    for (let s = Math.min(reachFrom, pathL); onPath && s <= pathL + 1e-6; s += STEP_M) {
-      const q = at(s)
-      const tb = s / P.ballSpeed
-      if (timeTo(i, q) <= tb) {
-        T[i] = tb
-        Q[i] = q
-        break
+    if (!tr.att[i] || i === tr.youIdx) continue
+    if (rests) {
+      const t = Math.max(L / P.ballSpeed, timeTo(i, at(L)))
+      if (t < T) [w, T, Q] = [i, t, at(L)]
+    } else
+      for (let s = Math.min(reachableFrom(L, P), pathL); s <= pathL + 1e-6; s += STEP_M) {
+        const q = at(s)
+        if (timeTo(i, q) <= s / P.ballSpeed) {
+          if (s / P.ballSpeed < T) [w, T, Q] = [i, s / P.ballSpeed, q]
+          break
+        }
       }
-    }
-    if (rests && T[i] === Infinity) {
-      const q = at(L)
-      T[i] = Math.max(L / P.ballSpeed, timeTo(i, q))
-      Q[i] = q
+  }
+  // 2. how likely that pass is to arrive (to the line, if nobody can stop it going out)
+  const risk = passRisk(tr, w >= 0 ? Q : at(pathL), w >= 0 ? T : undefined, P)
+  const p = risk ? pSuccess(risk.slack) : 1
+  const run = (i: number, end: [number, number]): [number, number][] => [posAt(tr, tr.rec, i), starts[i], end]
+  // 3. the outcome
+  if (risk && p < 0.5) {
+    const end = risk.at
+    return {
+      end,
+      takerIdx: risk.idx,
+      team: 'def',
+      run: run(risk.idx, end),
+      t: Math.hypot(end[0] - you[0], end[1] - you[1]) / P.ballSpeed,
+      rivalIdx: w,
+      margin: -(risk.slack + SLACK_BIAS),
+      option: null,
     }
   }
-  let win = -1
-  for (let i = 0; i < tr.n; i++) if (T[i] < Infinity && (win < 0 || T[i] < T[win])) win = i
-  if (win < 0) {
-    return { end: at(pathL), takerIdx: -1, team: null, run: [], t: pathL / P.ballSpeed, rivalIdx: -1, margin: 0, option: null }
-  }
-  const team: Team = tr.att[win] ? 'att' : 'def'
-  let rival = -1
-  for (let i = 0; i < tr.n; i++)
-    if (i !== tr.youIdx && tr.att[i] !== tr.att[win] && T[i] < Infinity && (rival < 0 || T[i] < T[rival])) rival = i
-  const end = Q[win]
+  if (w < 0) return { end: at(pathL), takerIdx: -1, team: null, run: [], t: pathL / P.ballSpeed, rivalIdx: -1, margin: 0, option: null }
   return {
-    end,
-    takerIdx: win,
-    team,
-    run: [posAt(tr, tr.rec, win), starts[win], end],
-    t: T[win],
-    rivalIdx: rival,
-    margin: rival >= 0 ? T[rival] - T[win] : Infinity,
-    ...(team === 'att' && offsideBy(tr, win) > 0
-      ? { option: null, offside: true }
-      : { option: team === 'att' ? optionAt(tr, win, end, T[win], P) : null }),
+    end: Q,
+    takerIdx: w,
+    team: 'att',
+    run: run(w, Q),
+    t: T,
+    rivalIdx: risk?.idx ?? -1,
+    margin: risk ? risk.slack + SLACK_BIAS : Infinity,
+    ...(offsideBy(tr, w) > 0 ? { option: null, offside: true } : { option: optionAt(tr, w, Q, T, P) }),
   }
 }
 
-/** "0.4 s", or "a split second" when the race was too close to call. */
-export const gap = (s: number) => (s < 0.05 ? 'a split second' : `${s.toFixed(1)} s`)
 
 /**
  * Memory for a pass into space: how far the tap was from where your nearest teammate would be
@@ -285,4 +309,17 @@ export function spaceMemory(tr: Track, tap: [number, number], P: RaceParams = RA
     if (d < best.dist) best = { idx: i, dist: d }
   }
   return best
+}
+
+/**
+ * "through ball" only when the receiver runs forward onto a ball played behind the defensive line
+ * (beyond the deepest outfield defender); any other ball ahead of a teammate is a "pass into space".
+ */
+export function passKind(tr: Track, idx: number, end: [number, number]): 'through ball' | 'pass into space' {
+  const vs: number[] = []
+  for (let i = 0; i < tr.n; i++) if (!tr.att[i]) vs.push(posAt(tr, tr.rec, i)[1])
+  vs.sort((a, b) => a - b)
+  const line = vs[1] ?? 0 // deepest outfield defender (the goalkeeper is the deepest player)
+  const from = posAt(tr, tr.rec, idx)
+  return end[1] < line && end[1] < from[1] - 2 ? 'through ball' : 'pass into space'
 }

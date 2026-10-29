@@ -16,6 +16,7 @@ const C = {
   pro: '#ffd400',
   best: '#ffffff',
   steal: '#ff6464',
+  brave: '#ff9f43',
 }
 
 export interface RevealDraw {
@@ -31,6 +32,8 @@ export interface RevealDraw {
   run: { pts: [number, number][]; team: Team } | null
   /** your pass into space: where the ball was won and the winner's run (null run = out of play) */
   space: { end: [number, number]; run: { pts: [number, number][]; team: Team } | null } | null
+  /** a riskier pass worth more than the best: orange dashed */
+  brave: { end: [number, number]; run: [number, number][] | null } | null
   /** offside line (v) to draw, when a teammate was beyond it as you passed */
   offsideV: number | null
   /** opponents who nearly cut a pass out: from where he stood to where he'd meet the ball */
@@ -40,6 +43,8 @@ export interface RevealDraw {
 export interface Scene {
   mode: 'intro' | 'approach' | 'decide' | 'reveal'
   pos: Float32Array
+  /** players drawn on top and never nudged aside (you, the receivers, anyone the text mentions) */
+  top?: number[]
   ball: Float32Array
   /** where "you" are looking (screen angle, 0 = up) */
   headDir: number
@@ -183,7 +188,7 @@ export class PitchRenderer {
     const bv = sc.ball[1]
 
     if (sc.mode === 'reveal') {
-      this.drawPlayers(sc.pos, () => 1)
+      this.drawPlayers(sc.pos, () => 1, sc.top)
       if (sc.reveal) this.drawReveal(sc, yu, yv)
       this.drawBall(bu, bv)
       if (sc.blend < 1) {
@@ -306,18 +311,53 @@ export class PitchRenderer {
     c.closePath()
   }
 
-  private drawPlayers(pos: Float32Array, alphaOf: (i: number) => number): void {
+  /**
+   * Where to draw each circle: players closer than a circle's width are nudged apart a little
+   * (a few relaxation passes), so numbers stay readable. `top` players never move; the others
+   * make room for them.
+   */
+  private nudged(pos: Float32Array, top: number[]): Float32Array {
+    const n = this.tr.n
+    const out = Float32Array.from(pos)
+    const D = 3.3 // m: circles are 2.9 m wide plus their outline: leave a visible gap
+    const pinned = (i: number) => top.includes(i)
+    for (let it = 0; it < 6; it++)
+      for (let i = 0; i < n; i++)
+        for (let j = i + 1; j < n; j++) {
+          let dx = out[j * 2] - out[i * 2]
+          let dy = out[j * 2 + 1] - out[i * 2 + 1]
+          let d = Math.hypot(dx, dy)
+          if (d >= D) continue
+          if (d < 1e-3) {
+            dx = Math.cos(i + j)
+            dy = Math.sin(i + j)
+            d = 1
+          }
+          const push = D - Math.hypot(out[j * 2] - out[i * 2], out[j * 2 + 1] - out[i * 2 + 1])
+          const [wi, wj] = pinned(i) && !pinned(j) ? [0, 1] : pinned(j) && !pinned(i) ? [1, 0] : [0.5, 0.5]
+          out[i * 2] -= (dx / d) * push * wi
+          out[i * 2 + 1] -= (dy / d) * push * wi
+          out[j * 2] += (dx / d) * push * wj
+          out[j * 2 + 1] += (dy / d) * push * wj
+        }
+    return out
+  }
+
+  private drawPlayers(pos: Float32Array, alphaOf: (i: number) => number, top: number[] = [this.tr.youIdx]): void {
     const { ctx, tr, s } = this
     const r = 1.45 * s
+    const at = this.nudged(pos, top)
+    // the players that matter last, so they are drawn on top
+    const order = [...Array(tr.n).keys()].sort((a, b) => Number(top.includes(a)) - Number(top.includes(b)))
     ctx.font = `700 ${Math.max(8, 1.55 * s)}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.lineWidth = Math.max(1, 0.25 * s)
-    for (let i = 0; i < tr.n; i++) {
+    for (const i of order) {
       const a = alphaOf(i)
       if (a <= 0.01) continue
-      const x = this.X(pos[i * 2])
-      const y = this.Y(pos[i * 2 + 1])
+      const x = this.X(at[i * 2])
+      const y = this.Y(at[i * 2 + 1])
       ctx.globalAlpha = a
       ctx.fillStyle = tr.att[i] ? C.att : C.def
       ctx.strokeStyle = 'rgba(255,255,255,0.9)'
@@ -390,6 +430,13 @@ export class PitchRenderer {
     if (R.best.alone) {
       this.arrow(yu, yv, be, bf, C.best, p, true)
       if (R.best.run) this.run(R.best.run, C.best, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
+    }
+    // the brave option (orange dashed): worth more than the best, but below 60 % to arrive
+    if (R.brave) {
+      const [ru, rv] = R.brave.end
+      this.ring(ru, rv, C.brave, true)
+      this.arrow(yu, yv, ru, rv, C.brave, Math.max(0, Math.min(1, p * 1.2 - 0.1)), true)
+      if (R.brave.run) this.run(R.brave.run, C.brave, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
     }
     // the pro's actual pass (yellow)
     this.arrow(yu, yv, R.proEnd[0], R.proEnd[1], C.pro, Math.max(0, Math.min(1, p * 1.4 - 0.2)), false)

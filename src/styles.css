@@ -967,6 +967,14 @@ button {
   border-color: #ff6464;
 }
 
+.lg.brave::before {
+  border-top: 3px dashed #ff9f43;
+}
+
+.compare thead th.brave {
+  color: #ff9f43;
+}
+
 .lg.danger::before {
   border-top: 2px dashed #ff6464;
 }
