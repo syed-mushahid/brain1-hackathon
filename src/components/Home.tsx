@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Moment } from '../types'
 import type { Profile } from '../lib/profile'
 import { RATING_MIN_ROUNDS, ratings, streakView } from '../lib/profile'
@@ -45,6 +45,20 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   const daily = profile.daily?.day === today ? profile.daily : null
   const r = ratings(profile)
   const insight = homeInsight(profile, today)
+  const howRef = useRef<HTMLDialogElement>(null)
+  const steps = (
+    <ol className="how">
+      <li>
+        <b>Scan</b>: hold &amp; turn the dial (or drag on the pitch) to look around while the ball comes
+      </li>
+      <li>
+        <b>Remember</b>: the screen goes dark when you receive
+      </li>
+      <li>
+        <b>Pass</b>: tap a teammate or into space within 2 s · double-tap for a lofted pass
+      </li>
+    </ol>
+  )
   const card = (
     <>
       {preview && !wide && <MomentPreview moment={preview} fit="band" />}
@@ -55,18 +69,26 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   const main = (
     <div className={`screen home ${wide ? '' : 'fade-in'}`}>
       <header className="home-top">
-        <div className={`streak ${st.count > 0 ? 'on' : ''}`}>
-          🔥{' '}
-          {st.count > 0 ? (
-            <>
-              <b>{st.count}</b>
-              <span className="streak-sub">{st.doneToday ? 'done today' : st.atRisk ? 'freeze will save it' : 'day streak'}</span>
-            </>
+        <div className="home-pills">
+          <div className={`streak ${st.count > 0 ? 'on' : ''}`}>
+            🔥{' '}
+            {st.count > 0 ? (
+              <span>
+                <b>{st.count}-day streak</b>
+                {st.doneToday && <span className="streak-sub"> · today ✓</span>}
+                {st.atRisk && <span className="streak-sub"> · your freeze will save it</span>}
+              </span>
+            ) : (
+              <span className="streak-sub">Start your streak today</span>
+            )}
+          </div>
+          {/* the freeze: "ready" from a 1-day streak; "saved" on the day it saved the streak; then hidden */}
+          {st.savedToday ? (
+            <div className="freeze on">❄️ Streak saved by your freeze</div>
           ) : (
-            <span className="streak-sub">Start your streak today</span>
+            st.count >= 1 && st.freezeAvailable && <Freeze />
           )}
         </div>
-        {st.count >= 1 && <Freeze ready={st.freezeAvailable} />}
         <button className="icon-btn" onClick={onToggleMute} aria-label={profile.muted ? 'Unmute' : 'Mute'}>
           {profile.muted ? '🔇' : '🔊'}
         </button>
@@ -118,25 +140,30 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
           </span>
         </button>
       )}
-      {onHowToPlay && (
-        <button className="cta ghost how-btn" onClick={onHowToPlay}>
+      {/* desktop: the instructions open from "How to play" so Home fits one screen; phones show them */}
+      {wide ? (
+        <button className="cta ghost how-btn" onClick={() => howRef.current?.showModal()}>
           How to play
         </button>
+      ) : (
+        steps
       )}
+      <dialog ref={howRef} className="how-dialog" aria-label="How to play" onClick={(e) => e.target === e.currentTarget && howRef.current?.close()}>
+        <h2>How to play</h2>
+        {steps}
+        <div className="how-actions">
+          {onHowToPlay && (
+            <button className="cta" onClick={onHowToPlay}>
+              Play the tutorial
+            </button>
+          )}
+          <button className="cta ghost" onClick={() => howRef.current?.close()}>
+            Got it
+          </button>
+        </div>
+      </dialog>
 
-      <ol className="how">
-        <li>
-          <b>Scan</b>: hold &amp; turn the dial (or drag on the pitch) to look around while the ball comes
-        </li>
-        <li>
-          <b>Remember</b>: the screen goes dark when you receive
-        </li>
-        <li>
-          <b>Pass</b>: tap a teammate or into space within 2 s · double-tap for a lofted pass
-        </li>
-      </ol>
-
-      <TestMoment moments={moments} onTest={onTest} />
+      {DEV && <TestMoment moments={moments} onTest={onTest} />}
 
       <footer className="credit">Data: Deutsche Fußball Liga (DFL), Bassek et al. 2025, Scientific Data</footer>
     </div>
@@ -151,8 +178,11 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   )
 }
 
-/** Streak freeze pill with a tooltip (hover / focus on desktop, tap on touch). */
-function Freeze({ ready }: { ready: boolean }) {
+/** "Test a moment" (testing aid) only with ?dev=1 in the address bar. */
+const DEV = new URLSearchParams(location.search).get('dev') === '1'
+
+/** Streak freeze pill (ready) with a tooltip (hover / focus on desktop, tap on touch). */
+function Freeze() {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     if (!open) return
@@ -160,15 +190,10 @@ function Freeze({ ready }: { ready: boolean }) {
     return () => clearTimeout(t)
   }, [open])
   return (
-    <button
-      className={`freeze ${ready ? 'on' : ''} ${open ? 'tip-open' : ''}`}
-      onClick={() => setOpen((o) => !o)}
-      onBlur={() => setOpen(false)}
-      aria-describedby="freeze-tip"
-    >
-      ❄️ {ready ? 'Freeze ready' : 'Freeze used'}
+    <button className={`freeze on ${open ? 'tip-open' : ''}`} onClick={() => setOpen((o) => !o)} onBlur={() => setOpen(false)} aria-describedby="freeze-tip">
+      ❄️ Freeze ready
       <span role="tooltip" id="freeze-tip" className="tip">
-        {ready ? 'Miss one day without losing your streak' : 'Used this week: a new one comes on Monday'}
+        Miss one day without losing your streak
       </span>
     </button>
   )

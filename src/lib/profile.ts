@@ -19,7 +19,8 @@ export interface Profile {
   levelChangedAt: number // history length when the level last changed
   /** times played, by stable moment id */
   played: Record<string, number>
-  streak: { count: number; lastDay: string | null; freezeWeek: string | null }
+  /** freezeDay: the day the weekly freeze saved the streak (shown on Home that day only) */
+  streak: { count: number; lastDay: string | null; freezeWeek: string | null; freezeDay?: string | null }
   daily: { day: string; brains: number[]; score: number } | null
   muted: boolean
   proMode: boolean // training scan phase in 3D first-person
@@ -133,16 +134,18 @@ export interface StreakView {
   doneToday: boolean
   freezeAvailable: boolean
   atRisk: boolean // missed yesterday, the weekly freeze will save it today
+  savedToday: boolean // the freeze saved the streak today
 }
 
 export function streakView(p: Profile, today = dayKey()): StreakView {
   const { count, lastDay, freezeWeek } = p.streak
   const freezeAvailable = freezeWeek !== isoWeek(today)
-  if (!lastDay) return { count: 0, doneToday: false, freezeAvailable, atRisk: false }
+  const savedToday = p.streak.freezeDay === today
+  if (!lastDay) return { count: 0, doneToday: false, freezeAvailable, atRisk: false, savedToday }
   const gap = daysBetween(lastDay, today)
-  if (gap <= 1) return { count, doneToday: gap === 0, freezeAvailable, atRisk: false }
-  if (gap === 2 && freezeAvailable) return { count, doneToday: false, freezeAvailable, atRisk: true }
-  return { count: 0, doneToday: false, freezeAvailable, atRisk: false }
+  if (gap <= 1) return { count, doneToday: gap === 0, freezeAvailable, atRisk: false, savedToday }
+  if (gap === 2 && freezeAvailable) return { count, doneToday: false, freezeAvailable, atRisk: true, savedToday }
+  return { count: 0, doneToday: false, freezeAvailable, atRisk: false, savedToday }
 }
 
 /** Called when a session is finished. One missed day per week is covered by a free freeze. */
@@ -159,5 +162,5 @@ export function completeDay(p: Profile, today = dayKey()): { profile: Profile; u
     freezeWeek = isoWeek(today)
     usedFreeze = true
   }
-  return { profile: { ...p, streak: { count, lastDay: today, freezeWeek } }, usedFreeze }
+  return { profile: { ...p, streak: { count, lastDay: today, freezeWeek, freezeDay: usedFreeze ? today : (s.freezeDay ?? null) } }, usedFreeze }
 }

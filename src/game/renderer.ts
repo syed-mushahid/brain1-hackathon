@@ -67,6 +67,10 @@ export interface Scene {
   /** reveal camera: zoom k and css-px offset, so the action stays clear of the results sheet */
   view?: View
   time: number // ms, for pulses
+  /** home preview only: fog strength (1 = the game's fog, 0 = none) and how visible the players
+   *  outside your vision stay (0 = hidden, as in the game) */
+  fog?: number
+  ghost?: number
 }
 
 export interface View {
@@ -226,7 +230,7 @@ export class PitchRenderer {
     f.setTransform(1, 0, 0, 1, 0, 0)
     f.globalCompositeOperation = 'source-over'
     f.clearRect(0, 0, this.fog.width, this.fog.height)
-    f.fillStyle = `rgba(${C.fog},${0.9 + 0.07 * e})`
+    f.fillStyle = `rgba(${C.fog},${(0.9 + 0.07 * e) * (sc.fog ?? 1)})`
     f.fillRect(0, 0, this.fog.width, this.fog.height)
     f.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
     f.globalCompositeOperation = 'destination-out'
@@ -272,7 +276,8 @@ export class PitchRenderer {
       const u = sc.pos[i * 2]
       const v = sc.pos[i * 2 + 1]
       const bubble = Math.max(vis(u, v, yu, yv, youR), vis(u, v, bu, bv, ballR)) * (1 - e)
-      return look > 0.01 ? Math.max(bubble, coneVis(u, v, yu, yv, sc.headDir) * look) : bubble
+      const seen = look > 0.01 ? Math.max(bubble, coneVis(u, v, yu, yv, sc.headDir) * look) : bubble
+      return Math.max(sc.ghost ?? 0, seen)
     })
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.drawImage(this.fog, 0, 0)

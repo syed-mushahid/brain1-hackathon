@@ -1388,15 +1388,27 @@ button {
   gap: 8px;
 }
 
+/* the streak and freeze pills: side by side when they fit, the freeze one on a second line when not
+   (the mute button stays top right) */
+.home-pills {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .streak,
 .freeze {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 12px;
+  gap: 5px;
+  padding: 7px 10px;
   border-radius: 999px;
   background: var(--panel);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  white-space: nowrap; /* one line each: they fit side by side on a 390 px phone */
 }
 
 /* "freeze used": dimmed through its colour, not opacity, so the text keeps its contrast */
@@ -1455,13 +1467,21 @@ button {
   }
 }
 
+/* key text gets explicit colours, not inherited ones: an extension or forced dark mode that recolours
+   body text (e.g. to near-black) must not make it vanish on our dark background */
+.streak,
 .streak b {
-  font-size: 1rem;
+  color: #f2f5ff;
+  -webkit-text-fill-color: #f2f5ff;
+}
+
+.streak b {
+  font-size: 0.88rem;
 }
 
 .streak-sub {
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
 
 .icon-btn {
@@ -1479,6 +1499,8 @@ button {
 
 .brand h1 {
   margin: 0;
+  color: #f2f5ff;
+  -webkit-text-fill-color: #f2f5ff;
   font-size: 2.3rem;
   font-weight: 900;
   letter-spacing: -0.01em;
@@ -1486,7 +1508,8 @@ button {
 }
 
 .brand h1 span {
-  color: var(--accent);
+  color: #ffd400;
+  -webkit-text-fill-color: #ffd400; /* the title's own fill is inherited: set the accent's too */
 }
 
 .brand .tag {
@@ -1531,6 +1554,8 @@ button {
 }
 
 .daily-title {
+  color: #f2f5ff;
+  -webkit-text-fill-color: #f2f5ff;
   font-weight: 800;
   margin-top: 4px;
 }
@@ -1622,7 +1647,8 @@ button {
 
 /* one line from the saved history, under the player card */
 .insight {
-  margin: -4px auto 0;
+  flex: none;
+  margin: 0 auto;
   padding: 6px 12px;
   border-radius: 999px;
   background: var(--panel);
@@ -1711,8 +1737,9 @@ button {
   --c2: #7a4a22;
   --ink: #1d1206;
   position: relative;
-  overflow: hidden; /* the shine's transform must not widen the page (sideways scroll on phones) */
+  flex: none; /* never squeezed by the column around it */
   width: 200px;
+  min-height: 230px;
   margin: 0 auto;
   padding: 16px 16px 18px;
   color: var(--ink);
@@ -1722,13 +1749,15 @@ button {
   animation: pop 0.5s cubic-bezier(0.2, 1.3, 0.4, 1) both;
 }
 
+/* the shine moves its background, not itself: nothing leaves the card (no clipping or overflow needed) */
 .player-card::after {
   content: '';
   position: absolute;
   z-index: 0;
   inset: 0;
-  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.35) 45%, transparent 60%);
-  transform: translateX(-100%);
+  background: linear-gradient(115deg, transparent 40%, rgba(255, 255, 255, 0.35) 50%, transparent 60%) no-repeat;
+  background-size: 300% 100%;
+  background-position: 100% 0;
   animation: shine 3.2s ease-in-out 0.6s infinite;
   pointer-events: none;
 }
@@ -1987,7 +2016,7 @@ button {
 @keyframes shine {
   60%,
   100% {
-    transform: translateX(100%);
+    background-position: 0 0;
   }
 }
 
@@ -2273,4 +2302,67 @@ button {
   font-size: 0.75rem;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* every screen sets its own text colour too: text that inherits it never falls back to a colour an
+   extension or forced dark mode put on <html> / <body> */
+.screen,
+.round {
+  color: #f2f5ff;
+}
+
+/* Windows contrast themes (forced colours): the system picks the colours; buttons and pills keep an
+   outline so they still read as buttons */
+@media (forced-colors: active) {
+  /* the theme sets `color` but not the text fill: let the fill follow it */
+  .brand h1,
+  .brand h1 span,
+  .streak,
+  .streak b,
+  .daily-title {
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .cta,
+  .chip-btn,
+  .replay-btn,
+  .icon-btn,
+  .streak,
+  .freeze,
+  .daily-card,
+  .insight,
+  .desk-panel {
+    border: 1px solid ButtonText;
+  }
+}
+
+/* How to play (desktop): the instructions in a dialog */
+.how-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 22px;
+  border: 0;
+  border-radius: 20px;
+  background: #151f38;
+  color: #f2f5ff;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+.how-dialog::backdrop {
+  background: rgba(6, 10, 22, 0.7);
+}
+
+.how-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 1.3rem;
+  font-weight: 900;
+}
+
+.how-dialog .how {
+  font-size: 0.95rem;
+}
+
+.how-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
 }
