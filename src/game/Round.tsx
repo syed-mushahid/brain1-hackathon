@@ -33,15 +33,27 @@ const LOOK_FADE_OUT_MS = 160
 const REVEAL_ANIM_MS = 900
 const DARKEN_MS = 300 // vision shrinking to "you" at reception
 const LIFT_MS = 350 // darkness lifting at the reveal
-const FRAME_MARGIN_M = 7 // space kept around the action when the reveal camera frames it
+const FRAME_MARGIN_M = 6 // space kept around the action when the reveal camera frames it
 const REPLAY_LEAD_S = 1 // the 2D replay starts this long before the reception
 const REPLAY_HOLD_MS = 1200 // ...and holds the last frame this long before returning to the reveal
+/** the reveal camera may zoom out this far: with the tall results sheet only a strip of pitch is left */
+const REVEAL_MIN_K = 0.15
 
 /** Lets the results sheet (rendered as a child of the round) start the 2D replay. */
-export const RoundControls = createContext<{ replay2D: (who: PlayStory['who']) => void; stopReplay: () => void; replaying: boolean }>({
+export const RoundControls = createContext<{
+  replay2D: (who: PlayStory['who']) => void
+  stopReplay: () => void
+  replaying: boolean
+  /** optional pitch layers (a tapped Brave / Danger row in the Why? tab) */
+  setLayers: (show: RevealDraw['show']) => void
+  /** the layer a Why? row stands for: 'brave', 't<opponent index>' (his danger line) or null */
+  layerOf: (point: string) => string | null
+}>({
   replay2D: () => {},
   stopReplay: () => {},
   replaying: false,
+  setLayers: () => {},
+  layerOf: () => null,
 })
 
 interface Props {
@@ -72,6 +84,7 @@ interface Api {
   panBy: (dx: number, dy: number) => void
   recenter: () => void
   stopReplay: () => void
+  setLayers: (show: RevealDraw['show']) => void
 }
 
 export function Round({ track, difficulty, settings, label, onResult, children, proMode = false }: Props) {
@@ -127,6 +140,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       kicked: false,
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
+      framed: [] as number[], // reveal: the players the headline and detail name (the camera keeps them in view)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
       // reveal / replay: how far the player dragged the pitch (css px), on top of the automatic framing
       pan: { x: 0, y: 0 },
@@ -162,6 +176,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
       const res = evaluate(track, { tap, scans: g.scans, lofted })
       g.top = involved(track, res)
+      g.framed = named(track, [res.headline, res.detail])
       g.reveal = {
         progress: 0,
         tap: res.tap,
@@ -177,6 +192,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           run: res.space.team ? { pts: res.space.run, team: res.space.team } : null,
         },
         threats: res.threats,
+        show: { brave: false, threats: [] },
         offsideV: res.offsideV,
         brave: res.brave && { end: res.brave.end, run: res.brave.run, lofted: res.brave.lofted },
       }
@@ -196,10 +212,11 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       if (!root || !sheet) return r.h
       // offsetTop ignores the sheet's slide-in transform: we aim for where it will settle
       const sheetTop = root.getBoundingClientRect().top + sheet.offsetTop
-      return Math.max(120, Math.min(r.h, sheetTop - canvas.getBoundingClientRect().top - 6))
+      return Math.max(40, Math.min(r.h, sheetTop - canvas.getBoundingClientRect().top - 6))
     }
     /** The box that matters at the reveal, fitted into the canvas area not covered by the sheet. */
-    const revealView = (R: RevealDraw): View => withPan(r.fitView(...revealBox(track, R, g.top), visibleHeight()))
+    const revealView = (R: RevealDraw): View =>
+      withPan(r.fitView(...revealBox(track, R, [...g.framed, ...R.show.threats]), visibleHeight(), REVEAL_MIN_K))
     /** the automatic framing moved by the player's drag */
     const withPan = (v: View): View => ({ k: v.k, tx: v.tx + g.pan.x, ty: v.ty + g.pan.y })
     const bestInCone = (dir: number) =>
@@ -294,6 +311,11 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         )
         g.replay = { tr: played, f: f0, end, kick, take, hold: 0, stage: -1, view }
         sound.whistle(1, 0.12)
+      },
+      setLayers(show) {
+        if (!g.reveal) return
+        g.reveal.show = show
+        g.settled = false
       },
       stopReplay() {
         if (!g.replay) return
@@ -419,6 +441,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         aim: g.phase === 'decide' ? (g.pending?.q ?? null) : null,
         reveal: g.reveal,
         view: g.view,
+        visibleH: g.reveal ? visibleHeight() : undefined,
         top: g.top,
         blend: g.phase === 'decide' ? Math.min(1, (now - g.t0) / DARKEN_MS) : g.phase === 'reveal' ? Math.min(1, (now - g.t0) / LIFT_MS) : 0,
         time: now,
@@ -547,7 +570,8 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         )}
       </div>
       <footer className="hud-bottom">
-        {/* the controller stays in the layout during the reveal so the pitch never resizes */}
+        {/* the controller keeps its place until the reveal (the pitch doesn't resize while you play);
+            at the reveal it goes and the pitch grows under the results sheet */}
         <div className="scan-controls" style={phase === 'reveal' || proMode ? { visibility: 'hidden' } : undefined}>
           <span className="dial-hint">{phase === 'approach' ? 'Hold & turn to scan' : phase === 'decide' ? 'Pass!' : ''}</span>
           <ScanDial
@@ -566,6 +590,14 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           value={{
             replaying: replayStage >= 0,
             stopReplay,
+            setLayers: (show) => api.current?.setLayers(show),
+            layerOf: (point) => {
+              const res = lastResult.current
+              if (!res) return null
+              if (res.brave && /^brave option/i.test(point)) return 'brave'
+              const t = res.threats.find((t) => new RegExp(`(?<![A-Za-z])[Rr]ed #${track.nums[t.idx]}(?!\\d)`).test(point))
+              return t ? `t${t.idx}` : null
+            },
             replay2D: (who) => {
               const tok = ++replayTok.current
               setReplayError('')
@@ -599,12 +631,12 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
 
 /** The box the reveal camera frames (u0, v0, u1, v1 in metres): every arrow and run, and every
  *  player the reveal is about (`top`), with room around them. */
-export function revealBox(track: Track, R: RevealDraw, top: number[]): [number, number, number, number] {
-  const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), R.proEnd]
-  for (const i of top) pts.push(posAt(track, track.rec, i))
-  for (const t of R.threats) pts.push(t.from, t.at)
-  if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, ...(R.best.alone ? (R.best.run ?? []) : []))
-  if (R.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
+export function revealBox(track: Track, R: RevealDraw, players: number[]): [number, number, number, number] {
+  const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), [track.ball[track.rec * 2], track.ball[track.rec * 2 + 1]], R.proEnd]
+  for (const i of players) pts.push(posAt(track, track.rec, i))
+  for (const t of R.threats) if (R.show.threats.includes(t.idx)) pts.push(t.from, t.at)
+  if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, R.best.ring, ...(R.best.alone ? (R.best.run ?? []) : []))
+  if (R.brave && R.show.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
   if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
   if (R.tap) pts.push(R.tap)
   if (R.run) pts.push(...R.run.pts)
@@ -627,7 +659,12 @@ export function involved(tr: Track, res: RoundResult): number[] {
     ...b.why.cols.flatMap((c) => [c.label, c.risk ? c.risk.text.replace(/\(#/, '(red #') : '']), // as Breakdown shows them
     ...b.scan.lines,
   ]
-  const out = [...res.mentioned]
+  return [...new Set([...res.mentioned, ...named(tr, texts)])]
+}
+
+/** The players some texts name ("#25" = teammate, "red #24" = opponent), as track indices. */
+export function named(tr: Track, texts: string[]): number[] {
+  const out: number[] = []
   for (const t of texts)
     for (const m of t.matchAll(PLAYER)) {
       const att = !m[1]

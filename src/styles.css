@@ -226,6 +226,11 @@ button {
   min-height: 112px;
 }
 
+/* at the reveal the scan dial goes: the pitch grows down under the results sheet */
+.round.phase-reveal .hud-bottom {
+  display: none;
+}
+
 .scan-controls {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -344,35 +349,53 @@ button {
 }
 
 /* ---------------------------------------------------------------- results */
+/* The results sheet snaps between compact (its own height) and tall; dragging the handle moves it
+   between them. Heights follow the visible viewport (dvh) and keep clear of the browser's bars. */
 .result-sheet {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   color: var(--text);
-  padding: 6px 18px max(14px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(17, 26, 48, 0.94), #0d1528 30%);
+  padding: 0 16px max(10px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(17, 26, 48, 0.96), #0d1528 30%);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border-radius: 22px 22px 0 0;
   box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
   animation: sheet 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) both;
-  /* at least 45 % of the screen stays pitch: the sheet's middle scrolls instead of growing */
-  display: flex;
-  flex-direction: column;
-  max-height: calc(55dvh - 48px);
+  transition: height 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 
-.result-sheet > * {
+.result-sheet.tall {
+  height: min(90dvh, calc(100dvh - 150px));
+}
+
+/* a Why? row is shown on the pitch: lower, so the row and its line are both in view */
+.result-sheet.tall.peek {
+  height: min(60dvh, calc(100dvh - 150px));
+}
+
+.result-sheet.dragging {
+  transition: none;
+}
+
+.sheet-grip {
   flex: none;
+  touch-action: none; /* the drag is ours, not the page's */
+  cursor: grab;
 }
 
 .sheet-handle {
   display: block;
   width: 100%;
   height: 22px;
-  margin-bottom: 2px;
   background: none;
+  cursor: inherit;
 }
 
 .sheet-handle i {
@@ -381,34 +404,14 @@ button {
   height: 5px;
   margin: 0 auto;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.28);
-}
-
-.result-sheet.collapsed .detail,
-.result-sheet.collapsed .sheet-details,
-.result-sheet.collapsed .sheet-tabs,
-.result-sheet.collapsed .sheet-panel {
-  display: none;
-}
-
-.result-sheet.collapsed .brain-ring {
-  width: 64px;
-  height: 64px;
-}
-
-.result-sheet.collapsed .brain-num {
-  font-size: 1.3rem;
-}
-
-.result-sheet.collapsed .brain-cap {
-  bottom: 13px;
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .result-top {
   display: flex;
   gap: 12px;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .result-text {
@@ -419,19 +422,30 @@ button {
 .result-sheet .headline {
   font-size: 1.2rem;
   font-weight: 900;
+  line-height: 1.2;
 }
 
+/* compact: at most two lines (the whole text opens the Why? tab) */
 .result-sheet .detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 3px;
   color: var(--muted);
-  font-size: 0.88rem;
-  margin-top: 4px;
-  line-height: 1.35;
+  font-size: 0.9rem;
+  line-height: 1.6; /* >= a player chip (1.55em): every line the same height, so the clamp cuts cleanly */
+  padding-bottom: 0.25em; /* room for descenders below the second line (still inside the next line's leading) */
+}
+
+.result-sheet .detail .pchip {
+  vertical-align: -0.08em;
 }
 
 .brain-ring {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 68px;
+  height: 68px;
   flex: none;
 }
 
@@ -462,43 +476,48 @@ button {
   color: var(--text);
   display: grid;
   place-items: center;
-  font-size: 1.7rem;
+  font-size: 1.4rem;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
-  padding-bottom: 10px;
+  padding-bottom: 9px;
 }
 
 .brain-cap {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 19px;
+  bottom: 15px;
   text-align: center;
-  font-size: 0.55rem;
+  font-size: 0.5rem;
   letter-spacing: 0.16em;
   color: var(--muted);
   font-weight: 800;
 }
 
-.bar-row {
+/* compact score bars: three columns, label + value over a thin bar */
+.bars {
   display: grid;
-  grid-template-columns: 96px 1fr 34px;
-  align-items: center;
-  gap: 10px;
-  margin: 5px 0;
-  color: var(--text);
-  font-size: 0.85rem;
-  font-weight: 700;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 10px;
 }
 
-.bar-label small {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: 0.7rem;
+.bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  row-gap: 4px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.bar-val {
+  font-variant-numeric: tabular-nums;
 }
 
 .bar-track {
-  height: 9px;
+  grid-column: 1 / -1;
+  height: 6px;
   border-radius: 99px;
   background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
@@ -513,54 +532,116 @@ button {
 }
 
 /* coloured like the share squares: red < 50, yellow 50-74, green 75+ */
-.bar-row.green .bar-fill {
+.bar.green .bar-fill {
   background: var(--green);
 }
 
-.bar-row.yellow .bar-fill {
+.bar.yellow .bar-fill {
   background: var(--accent);
 }
 
-.bar-row.red .bar-fill {
+.bar.red .bar-fill {
   background: var(--red);
 }
 
-.bar-val {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* breakdown tabs + panels (Why? / Your scan / Match) */
-.sheet-tabs {
+/* Why? · Scan · Match · ▶ Replay */
+.chips {
   display: flex;
   gap: 6px;
-  margin: 2px 0 6px;
+  margin-bottom: 10px;
 }
 
-.tab {
+.chip-btn {
   flex: 1;
-  padding: 6px 0;
+  min-height: 38px;
+  padding: 0 4px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.chip-btn.replay {
+  flex: 1.3;
+  color: var(--cyan);
+  box-shadow: inset 0 0 0 1.5px rgba(34, 227, 255, 0.45);
+}
+
+.chip-btn.on {
+  background: rgba(34, 227, 255, 0.16);
+  box-shadow: inset 0 0 0 1.5px var(--cyan);
+}
+
+/* the tall sheet: title + ×, tab switch, scrolling content, Next pinned at the bottom */
+.sheet-tall {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tall-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tall-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 900;
+}
+
+.tall-switch {
+  display: flex;
+  gap: 4px;
+}
+
+.tall-switch button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.07);
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.85rem;
   font-weight: 800;
 }
 
-.tab.on {
-  background: rgba(34, 227, 255, 0.14);
-  border-color: rgba(34, 227, 255, 0.5);
-  color: var(--text);
+.tall-head .close {
+  margin-left: 0;
+  font-size: 1.5rem;
+  line-height: 1;
 }
 
-.sheet-panel {
-  flex: 0 1 auto;
-  min-height: 60px;
+.tall-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 2px 2px 4px;
-  font-size: 0.82rem;
+  padding: 8px 2px 12px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.tall-body .lead {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+
+.tall-foot {
+  flex: none;
+  padding-top: 8px;
+}
+
+/* breakdown panels (Why? / Your scan / Match) */
+.sheet-panel {
+  font-size: 15px;
   color: var(--text);
   animation: fadein 0.2s ease both;
   user-select: text;
@@ -845,71 +926,149 @@ button {
   font-weight: 700;
 }
 
-/* replays: your pass / the pro's, on the pitch or (3D switch) with the TV camera */
-.replay-row {
-  display: flex;
-  align-items: flex-start;
+/* ▶ Replay: whose pass, 2D or 3D */
+.replay-chooser {
+  display: grid;
   gap: 8px;
-  margin: 0 0 10px;
+  margin: -2px 0 10px;
+  animation: fadein 0.18s ease both;
 }
 
-.replay-you {
-  flex: 1;
+.replay-picks {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
+  gap: 8px;
 }
 
 .replay-btn {
   flex: 1;
-  width: 100%;
-  padding: 10px 6px;
-  border-radius: 999px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 9px 6px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.06);
   box-shadow: inset 0 0 0 1.5px rgba(34, 227, 255, 0.4);
   color: var(--text);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   font-weight: 800;
-  white-space: nowrap;
 }
 
-.replay-btn.on {
-  background: rgba(34, 227, 255, 0.18);
-  box-shadow: inset 0 0 0 1.5px var(--cyan);
-}
-
-.replay-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.replay-note {
+.replay-btn small {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.7rem;
   font-weight: 600;
 }
 
-.toggle-3d {
-  flex: none;
-  min-width: 48px;
-  padding: 10px 0;
-  border-radius: 999px;
+.seg {
+  display: flex;
+  padding: 3px;
+  border-radius: 99px;
   background: rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 0 0 1.5px var(--line);
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 900;
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.toggle-3d.on {
-  background: var(--cyan);
-  box-shadow: none;
-  color: #071018;
+.seg button {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 99px;
+  background: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.seg button.on {
+  background: rgba(34, 227, 255, 0.18);
+  color: var(--text);
 }
 
 .next-btn {
   padding-block: 14px;
+}
+
+/* Why? rows with a line on the pitch: tap to show it (row and line highlighted together) */
+.points li.layer {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.points li.layer button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 3px 0 0 var(--lc);
+  text-align: left;
+  line-height: 1.4;
+}
+
+.points li.layer.brave {
+  --lc: #ff9f43;
+}
+
+.points li.layer.danger {
+  --lc: #ff6464;
+}
+
+.points li.layer.on button {
+  background: color-mix(in srgb, var(--lc) 16%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--lc);
+}
+
+.layer-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--lc);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+/* ⓘ on the pitch: the legend */
+.pitch-info {
+  position: absolute;
+  top: calc(max(8px, env(safe-area-inset-top)) + 52px);
+  right: 20px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.info-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(10, 16, 32, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+  color: var(--text);
+  font-size: 1.05rem;
+}
+
+.pitch-info.open .info-btn {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.info-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(10, 16, 32, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: 0.8rem;
+  color: var(--text);
+  animation: fadein 0.15s ease both;
+}
+
+.info-card small {
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
 /* Why? tab: the formulas, folded away */
@@ -937,8 +1096,11 @@ button {
 .replay2d-bar {
   position: absolute;
   top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* centred with the full width available (left: 50% would leave it only half, cutting the caption) */
+  left: 12px;
+  right: 12px;
+  width: fit-content;
+  margin-inline: auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -977,16 +1139,6 @@ button {
   border-radius: 50%;
   background: #ff4646;
   animation: pulse 1s ease-in-out infinite;
-}
-
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  justify-content: center;
-  margin: 6px 0 8px;
-  font-size: 0.75rem;
-  color: var(--muted);
 }
 
 .lg::before {

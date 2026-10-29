@@ -5,10 +5,18 @@ import type { PassOption } from '../types'
 
 export type Tab = 'why' | 'scan' | 'match'
 
-export function BreakdownPanel({ tab, b }: { tab: Tab; b: Breakdown }) {
+/** Why? rows that have a line on the pitch (the brave option, an opponent's danger line): tapping one
+ *  shows that line, and the row stays highlighted with it. Keys: 'brave' or 't<player index>'. */
+export interface Layers {
+  keyOf: (point: string) => string | null
+  active: string[]
+  toggle: (key: string) => void
+}
+
+export function BreakdownPanel({ tab, b, layers }: { tab: Tab; b: Breakdown; layers?: Layers }) {
   return (
     <div className="sheet-panel" role="tabpanel">
-      {tab === 'why' && <Why w={b.why} />}
+      {tab === 'why' && <Why w={b.why} layers={layers} />}
       {tab === 'scan' && <Scan s={b.scan} />}
       {tab === 'match' && <Match m={b.match} />}
     </div>
@@ -26,7 +34,17 @@ const ROWS: [string, (o: PassOption) => string, ((o: PassOption) => number) | nu
   ['Distance', (o) => `${Math.round(o.dist)} m`, null],
 ]
 
-function Why({ w }: { w: WhyInfo }) {
+const cap = (t: string) => t.replace(/\.$/, '').replace(/^./, (c) => c.toUpperCase())
+const norm = (t: string) => tidy(t).toLowerCase().replace(/[^a-z0-9#' ]+/g, ' ').replace(/\s+/g, ' ').trim()
+
+/** A bullet that opens by restating the title ("The pro's pass to #7 (…): 25% chance…" under "The pro
+ *  found it: the pro's pass to #7…") keeps only what it adds. */
+function withoutTitle(title: string, point: string): string {
+  const m = point.match(/^(.*?)(?:\s*\([^)]*\))?:\s+(.*)$/)
+  return m && norm(title).includes(norm(m[1])) ? m[2] : point
+}
+
+function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
   const opts = w.cols.map((c) => c.o).filter((o): o is PassOption => o !== null)
   return (
     <>
@@ -34,11 +52,26 @@ function Why({ w }: { w: WhyInfo }) {
         <Rich text={w.title} />
       </div>
       <ul className="points">
-        {w.points.map((p) => (
-          <li key={p}>
-            <Rich text={p.replace(/\.$/, '').replace(/^./, (c) => c.toUpperCase())} />
-          </li>
-        ))}
+        {w.points.map((p, i) => {
+          const text = cap(i === 0 ? withoutTitle(w.title, p) : p)
+          const key = layers?.keyOf(p)
+          if (!layers || !key) {
+            return (
+              <li key={p}>
+                <Rich text={text} />
+              </li>
+            )
+          }
+          const on = layers.active.includes(key)
+          return (
+            <li key={p} className={`layer ${key === 'brave' ? 'brave' : 'danger'} ${on ? 'on' : ''}`}>
+              <button aria-pressed={on} onClick={() => layers.toggle(key)}>
+                <Rich text={text} />
+                <span className="layer-hint">{on ? 'On the pitch · tap to hide' : 'Show on the pitch'}</span>
+              </button>
+            </li>
+          )
+        })}
       </ul>
       <table className="compare">
         <thead>

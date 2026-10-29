@@ -3,6 +3,8 @@ import { PITCH_L, PITCH_W, type Track } from './track'
 import { CONE_HALF, CONE_RANGE, coneVis, VISION_FEATHER as FEATHER, VISION_R } from './vision'
 
 const MARGIN = 2.5 // metres of grass drawn around the pitch
+/** an arrow stops this far (m) before its end: the head's tip stays clear of the receiver's circle */
+const ARROW_GAP_M = 2.7
 
 const C = {
   grassA: '#1d7443',
@@ -40,7 +42,10 @@ export interface RevealDraw {
   /** offside line (v) to draw, when a teammate was beyond it as you passed */
   offsideV: number | null
   /** opponents who nearly cut a pass out: from where he stood to where he'd meet the ball */
-  threats: { from: [number, number]; at: [number, number] }[]
+  threats: { idx: number; from: [number, number]; at: [number, number] }[]
+  /** optional layers, drawn only when asked for (a tapped row in the Why? tab): the brave option and
+   *  the danger lines of these opponents (player indices) */
+  show: { brave: boolean; threats: number[] }
 }
 
 export interface Scene {
@@ -61,6 +66,8 @@ export interface Scene {
   reveal: RevealDraw | null
   /** reveal camera: zoom k and css-px offset, so the action stays clear of the results sheet */
   view?: View
+  /** reveal: canvas height (css px) not covered by the results sheet; labels stay above it */
+  visibleH?: number
   time: number // ms, for pulses
 }
 
@@ -196,9 +203,11 @@ export class PitchRenderer {
     const bv = sc.ball[1]
 
     if (sc.mode === 'reveal') {
-      this.drawPlayers(sc.pos, () => 1, sc.top)
+      // circles first, then arrows and rings, then every jersey number on top: nothing covers a number
+      this.drawPlayers(sc.pos, () => 1, sc.top, false)
       if (sc.reveal) this.drawReveal(sc, yu, yv)
       this.drawBall(bu, bv)
+      this.drawNumbers(() => 1, sc.top)
       if (sc.blend < 1) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
         ctx.fillStyle = `rgba(${C.fog},${0.97 * (1 - sc.blend)})`
@@ -359,30 +368,47 @@ export class PitchRenderer {
     return out
   }
 
-  private drawPlayers(pos: Float32Array, alphaOf: (i: number) => number, top: number[] = [this.tr.youIdx]): void {
+  /** where the circles were last drawn (nudged), for drawNumbers */
+  private at: Float32Array | null = null
+
+  /** The players that matter last, so they are drawn on top. */
+  private order(top: number[]): number[] {
+    return [...Array(this.tr.n).keys()].sort((a, b) => Number(top.includes(a)) - Number(top.includes(b)))
+  }
+
+  /** Player circles; with `numbers` false the jersey numbers are left for drawNumbers (drawn last). */
+  private drawPlayers(pos: Float32Array, alphaOf: (i: number) => number, top: number[] = [this.tr.youIdx], numbers = true): void {
     const { ctx, tr, s } = this
     const r = 1.45 * s
-    const at = this.nudged(pos, top)
-    // the players that matter last, so they are drawn on top
-    const order = [...Array(tr.n).keys()].sort((a, b) => Number(top.includes(a)) - Number(top.includes(b)))
-    ctx.font = `700 ${Math.max(8, 1.55 * s)}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
+    const at = (this.at = this.nudged(pos, top))
     ctx.lineWidth = Math.max(1, 0.25 * s)
-    for (const i of order) {
+    for (const i of this.order(top)) {
       const a = alphaOf(i)
       if (a <= 0.01) continue
-      const x = this.X(at[i * 2])
-      const y = this.Y(at[i * 2 + 1])
       ctx.globalAlpha = a
       ctx.fillStyle = tr.att[i] ? C.att : C.def
       ctx.strokeStyle = 'rgba(255,255,255,0.9)'
       ctx.beginPath()
-      ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.arc(this.X(at[i * 2]), this.Y(at[i * 2 + 1]), r, 0, Math.PI * 2)
       ctx.fill()
       ctx.stroke()
-      ctx.fillStyle = '#fff'
-      ctx.fillText(String(tr.nums[i]), x, y + 0.5)
+    }
+    ctx.globalAlpha = 1
+    if (numbers) this.drawNumbers(alphaOf, top)
+  }
+
+  private drawNumbers(alphaOf: (i: number) => number, top: number[] = [this.tr.youIdx]): void {
+    const { ctx, tr, s, at } = this
+    if (!at) return
+    ctx.font = `700 ${Math.max(8, 1.55 * s)}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = '#fff'
+    for (const i of this.order(top)) {
+      const a = alphaOf(i)
+      if (a <= 0.01) continue
+      ctx.globalAlpha = a
+      ctx.fillText(String(tr.nums[i]), this.X(at[i * 2]), this.Y(at[i * 2 + 1]) + 0.5)
     }
     ctx.globalAlpha = 1
   }
@@ -448,8 +474,8 @@ export class PitchRenderer {
       this.arrow(yu, yv, be, bf, C.best, p, true, R.best.lofted)
       if (R.best.run) this.run(R.best.run, C.best, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
     }
-    // the brave option (orange dashed): worth more than the best, but below 60 % to arrive
-    if (R.brave) {
+    // the brave option (orange dashed): worth more than the best, but below 60 % to arrive (on request)
+    if (R.brave && R.show.brave) {
       const [ru, rv] = R.brave.end
       this.ring(ru, rv, C.brave, true)
       this.arrow(yu, yv, ru, rv, C.brave, Math.max(0, Math.min(1, p * 1.2 - 0.1)), true, R.brave.lofted)
@@ -495,10 +521,11 @@ export class PitchRenderer {
         ctx.setLineDash([])
       }
     }
-    // near misses: red dashes from the opponent to where he could have met the ball
-    if (p > 0.6) {
+    // near misses (on request): red dashes from the opponent to where he could have met the ball
+    const shown = R.threats.filter((t) => R.show.threats.includes(t.idx))
+    if (p > 0.6 && shown.length) {
       ctx.globalAlpha = Math.min(1, (p - 0.6) / 0.3)
-      for (const t of R.threats) {
+      for (const t of shown) {
         ctx.strokeStyle = C.steal
         ctx.lineWidth = 0.22 * s
         ctx.setLineDash([0.5 * s, 0.45 * s])
@@ -516,6 +543,82 @@ export class PitchRenderer {
       ctx.globalAlpha = 1
     }
     if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 || R.space ? C.mine : '#ff6b3d')
+    if (p > 0.7) this.endLabels(R, yu, yv, at, Math.min(1, (p - 0.7) / 0.2), sc.view ?? { k: 1, tx: 0, ty: 0 }, sc.visibleH ?? this.h)
+  }
+
+  /** "You", "Pro", "Best" (and "Brave" when shown) next to the arrow ends, clear of the receiver's
+   *  ring; labels at the same spot merge ("Pro · Best"). Each goes where it stays on screen (above the
+   *  sheet) and covers the fewest player circles: beyond the end first, then around it. */
+  private endLabels(R: RevealDraw, yu: number, yv: number, at: (i: number) => [number, number], alpha: number, vw: View, visibleH: number): void {
+    const { ctx, s } = this
+    const ends: { pt: [number, number]; parts: [string, string][] }[] = []
+    const add = (pt: [number, number], text: string, color: string) => {
+      const near = ends.find((e) => Math.hypot(e.pt[0] - pt[0], e.pt[1] - pt[1]) < 3.5)
+      if (near) near.parts.push([text, color])
+      else ends.push({ pt, parts: [[text, color]] })
+    }
+    if (R.tap) add(R.chosenIdx >= 0 ? at(R.chosenIdx) : R.space ? R.space.end : R.tap, 'You', C.mine)
+    add(R.proEnd, 'Pro', C.pro)
+    add(R.best.alone ? R.best.end : R.best.ring, 'Best', C.best)
+    if (R.brave && R.show.brave) add(R.brave.end, 'Brave', C.brave)
+    const fs = Math.max(10, 1.3 * s)
+    const sep = ' · '
+    ctx.font = `800 ${fs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'left'
+    ctx.globalAlpha = alpha
+    const placed: [number, number, number, number][] = [] // x0, y0, x1, y1 (canvas css px, before the view)
+    const circleR = 1.6 * s
+    for (const e of ends) {
+      const widths = e.parts.map(([t]) => ctx.measureText(t).width)
+      const w = widths.reduce((a, b) => a + b, 0) + ctx.measureText(sep).width * (e.parts.length - 1) + fs
+      const h = fs * 1.5
+      const d = Math.hypot(e.pt[0] - yu, e.pt[1] - yv)
+      const base = d > 0.5 ? Math.atan2(e.pt[1] - yv, e.pt[0] - yu) : -Math.PI / 2
+      let best = { score: Infinity, cx: 0, cy: 0 }
+      ;[0, 1, -1, 2, -2, 3, -3, 4].forEach((step, rank) => {
+        const a = base + (step * Math.PI) / 4
+        const [dx, dy] = [Math.cos(a), Math.sin(a)]
+        const off = 2.6 * s + Math.abs(dy) * (h / 2) + Math.abs(dx) * (w / 2)
+        const cx = this.X(e.pt[0]) + dx * off
+        const cy = this.Y(e.pt[1]) + dy * off
+        const [x0, y0, x1, y1] = [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
+        // on screen (through the camera) and above the results sheet
+        const sx0 = vw.k * x0 + vw.tx
+        const sx1 = vw.k * x1 + vw.tx
+        const sy0 = vw.k * y0 + vw.ty
+        const sy1 = vw.k * y1 + vw.ty
+        let score = rank * 0.5
+        if (sx0 < 2 || sx1 > this.w - 2 || sy0 < 2 || sy1 > visibleH - 2) score += 1000
+        for (let i = 0; i < this.tr.n; i++) {
+          const px = this.X(this.at ? this.at[i * 2] : 0)
+          const py = this.Y(this.at ? this.at[i * 2 + 1] : 0)
+          const nx = Math.max(x0, Math.min(x1, px))
+          const ny = Math.max(y0, Math.min(y1, py))
+          if (Math.hypot(px - nx, py - ny) < circleR) score += 10
+        }
+        for (const [a0, b0, a1, b1] of placed) if (x0 < a1 && x1 > a0 && y0 < b1 && y1 > b0) score += 50
+        if (score < best.score) best = { score, cx, cy }
+      })
+      const { cx, cy } = best
+      placed.push([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2])
+      ctx.fillStyle = 'rgba(10,16,32,0.82)'
+      ctx.beginPath()
+      ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2)
+      ctx.fill()
+      let x = cx - w / 2 + fs / 2
+      e.parts.forEach(([t, col], k) => {
+        if (k > 0) {
+          ctx.fillStyle = 'rgba(255,255,255,0.6)'
+          ctx.fillText(sep, x, cy)
+          x += ctx.measureText(sep).width
+        }
+        ctx.fillStyle = col
+        ctx.fillText(t, x, cy)
+        x += widths[k]
+      })
+    }
+    ctx.globalAlpha = 1
   }
 
   /** The player who won the ball: a ring where he stood, then his run to the ball. */
@@ -584,7 +687,7 @@ export class PitchRenderer {
     if (lofted) return this.curvedArrow(x0, y0, this.X(u1), this.Y(v1), len, color, p, dashed)
     const ang = Math.atan2(this.Y(v1) - y0, this.X(u1) - x0)
     const start = 2.4 * s // leave the "you" ring clear
-    const end = Math.max(start, (len - 1.6 * s) * p)
+    const end = Math.max(start, (len - ARROW_GAP_M * s) * p)
     const xe = x0 + Math.cos(ang) * end
     const ye = y0 + Math.sin(ang) * end
     ctx.strokeStyle = color
@@ -615,7 +718,7 @@ export class PitchRenderer {
     for (let i = 1; i <= N; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
     const total = cum[N]
     const start = 2.4 * s // leave the "you" ring clear
-    const end = Math.max(start, (total - 1.6 * s) * p)
+    const end = Math.max(start, (total - ARROW_GAP_M * s) * p)
     const at = (d: number): [number, number, number] => {
       let i = 1
       while (i < N && cum[i] < d) i++
