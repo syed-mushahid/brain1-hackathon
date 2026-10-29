@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { Moment } from '../types'
+import type { MomentData as Moment } from '../types'
 import { buildWorld, type World } from './world'
 import { Players, type Clock } from './Players'
 import { Stadium } from './Stadium'

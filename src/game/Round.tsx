@@ -9,7 +9,7 @@ import { coneVis, dirTo, HEAD_TURN, turnTowards, type ScanRecord } from './visio
 import { ScanDial } from './ScanDial'
 import { findBestPass } from './best'
 import { minuteLabel } from './explain'
-import type { Moment } from '../types'
+import type { Difficulty, MomentData } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
 import { ProScan3D } from '../three/lazy'
@@ -45,6 +45,8 @@ export const RoundControls = createContext<{ replay2D: (who: PlayStory['who']) =
 
 interface Props {
   track: Track
+  /** the game's difficulty for this moment (data/load.ts) */
+  difficulty: Difficulty
   settings: RoundSettings
   label: string
   onResult: (r: RoundResult, scans: ScanRecord[]) => void
@@ -68,7 +70,7 @@ interface Api {
   stopReplay: () => void
 }
 
-export function Round({ track, settings, label, onResult, children, proMode = false }: Props) {
+export function Round({ track, difficulty, settings, label, onResult, children, proMode = false }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -453,7 +455,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       <header className="hud-top">
         <span className="chip">{label}</span>
         <span className="clock">{m.clock}′</span>
-        <span className={`chip diff diff-${m.difficulty}`}>{m.difficulty}</span>
+        <span className={`chip diff diff-${difficulty}`}>{difficulty}</span>
       </header>
       <div
         className="pitch-wrap"
@@ -555,7 +557,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 }
 
 /** "You are <player> · <team> · <minute>" on the intro screen */
-function Who({ m }: { m: Moment }) {
+function Who({ m }: { m: MomentData }) {
   const you = m.names[m.you_pid]
   const team = m.context.attacking === 'home' ? m.context.home : m.context.away
   return (

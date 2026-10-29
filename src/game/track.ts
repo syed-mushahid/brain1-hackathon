@@ -1,4 +1,4 @@
-import type { Moment } from '../types'
+import type { MomentData } from '../types'
 
 // Portrait pitch: the attacking team plays bottom -> top.
 //   u = across the pitch, 0..68 (left -> right on screen)
@@ -14,7 +14,7 @@ export function toPortrait(x: number, y: number): [number, number] {
 
 /** A moment converted to flat typed arrays for fast per-frame sampling. */
 export interface Track {
-  m: Moment
+  m: MomentData
   n: number
   nFrames: number
   pids: string[]
@@ -29,7 +29,7 @@ export interface Track {
   pass1: number
 }
 
-export function buildTrack(m: Moment): Track {
+export function buildTrack(m: MomentData): Track {
   const first = m.frames[0].players
   const pids = first.map((p) => p.pid)
   const index = new Map(pids.map((pid, i) => [pid, i]))

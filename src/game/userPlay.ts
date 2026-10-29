@@ -7,7 +7,7 @@
 //     model raced), and carries on with the ball; the quickest player of the other team chases;
 //   - everyone else moves as they really did in the match (plays.json): lifelike, but they were
 //     reacting to the pro's real pass, not yours.
-import type { Frame, Moment } from '../types'
+import type { Frame, MomentData } from '../types'
 import { withPlay, type Play, type PlayedMoment } from '../lib/plays'
 import type { RoundResult } from './evaluate'
 import { flight, RACE } from './space'
@@ -34,7 +34,7 @@ export function proStory(m: PlayedMoment): StoryMoment {
 }
 
 export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): StoryMoment | null {
-  const m: Moment = tr.m
+  const m: MomentData = tr.m
   const rec = tr.rec
   // a pass into space, or a pass to feet the race says was cut out: replay that race
   const sp = res.space ?? res.lost
@@ -164,7 +164,7 @@ const r1 = (x: number) => Math.round(x * 10) / 10
  * Replay caption for the current beat: 0 = ball coming, 1 = on the ball, 2 = pass travelling,
  * 3 = taken over. Players as "#8" / "red #23" (shown as number circles by <Rich>).
  */
-export function storyCaption(m: Moment, story: PlayStory, beat: number): string {
+export function storyCaption(m: MomentData, story: PlayStory, beat: number): string {
   const you = `#${m.you_pid.slice(1)}`
   const who = story.who === 'pro' ? 'Real play' : 'Your pass'
   if (beat === 0) return `${who} · the ball comes to ${you}`

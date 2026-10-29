@@ -1,7 +1,7 @@
 // Plain-language breakdown of a round for the results sheet:
-//   why one pass was better than another (from the option values in moments.json),
+//   why one pass was better than another (from the game's option values),
 //   what your scanning did, and which real match / players the moment comes from.
-import type { Moment, PassOption, Team } from '../types'
+import type { MomentData, PassOption, Team } from '../types'
 import { FPS, idxOf, posAt, toPortrait, type Track } from './track'
 import { scanParts } from './scoring'
 import { scoredOptions, SEARCH, type BestPass } from './best'
@@ -105,7 +105,7 @@ function strengths(o: PassOption, name: string): string {
   return `${name}: ${pct(o.p ?? 1)} chance to arrive, ${fwd}, ${goalPct(o.epv ?? 0)} of attacks from there end in a goal`
 }
 
-export function minuteLabel(m: Moment): string {
+export function minuteLabel(m: MomentData): string {
   const min = m.context.minute
   if (m.period === 1 && min > 45) return `45+${min - 45}′`
   if (m.period === 2 && min > 90) return `90+${min - 90}′`

@@ -6,6 +6,7 @@
 import type { Difficulty } from '../types'
 import { findBestPass, findBravePass, scoredOptions } from './best'
 import type { Track } from './track'
+import { pressure as pressureAt } from './facts'
 
 const CLOSE_POINTS = 10
 
@@ -18,7 +19,7 @@ export function momentDifficulty(tr: Track): Difficulty {
   if (best.intoSpace) values.push(best.o.value)
   if (brave?.intoSpace) values.push(brave.o.value)
   const nClose = values.filter((v) => v >= best.o.value - CLOSE_POINTS).length
-  const pressure = tr.m.pressure_m
+  const pressure = pressureAt(tr)
   const points = Math.min(Math.max(nClose, 1) - 1, 2) + (pressure < 2.5 ? 2 : pressure < 5 ? 1 : 0)
   if (nClose <= 1 && points <= 1) return 'easy'
   if (points >= 3) return 'hard'

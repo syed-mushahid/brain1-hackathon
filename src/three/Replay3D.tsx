@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { Moment } from '../types'
+import type { MomentData as Moment } from '../types'
 import type { PlayedMoment } from '../lib/plays'
 import { proStory, storyCaption, storyEnd, type StoryMoment } from '../game/userPlay'
 import { Rich } from '../components/Rich'

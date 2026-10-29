@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
-import type { Moment, MomentsFile } from './types'
+import type { Moment, MomentData } from './types'
 import { buildTrack } from './game/track'
-import { momentDifficulty } from './game/difficulty'
+import { loadMoments } from './data/load'
 import { Round, type RoundSettings } from './game/Round'
 import type { RoundResult } from './game/evaluate'
 import { ResultSheet } from './components/ResultSheet'
@@ -41,19 +41,18 @@ interface Session {
 }
 
 export default function App() {
-  const [data, setData] = useState<MomentsFile | null>(null)
+  const [data, setData] = useState<{ moments: Moment[] } | null>(null)
   const [error, setError] = useState('')
   const [profile, setProfileState] = useState<Profile>(loadProfile)
   const [session, setSession] = useState<Session | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
-  const [replay, setReplay] = useState<{ moment: Moment; mode: ReplayMode; bestIdx: number } | null>(null)
+  const [replay, setReplay] = useState<{ moment: MomentData; mode: ReplayMode; bestIdx: number } | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
 
   useEffect(() => {
-    fetch('./moments.json')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      // difficulty from the game's own pass values (difficulty.ts), not the pipeline's heuristic
-      .then((d: MomentsFile) => setData({ ...d, moments: d.moments.map((m) => ({ ...m, difficulty: momentDifficulty(buildTrack(m)) })) }))
+    // validated against the data contract; difficulty from the game's own model (data/load.ts)
+    loadMoments()
+      .then((moments) => (moments.length ? setData({ moments }) : Promise.reject(new Error('no playable moments'))))
       .catch((e) => setError(String(e)))
   }, [])
 
@@ -171,6 +170,7 @@ export default function App() {
         <Round
           key={`${session.kind}-${session.index}`}
           track={track}
+          difficulty={current!.difficulty}
           settings={session.settings}
           label={label}
           onResult={onResult}

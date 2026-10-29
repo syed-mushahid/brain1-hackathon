@@ -5,11 +5,12 @@
 // For every k it re-derives the 0-100 scale (2nd / 98th percentile of the EV of all passes to feet and
 // all searched spots), then measures how often the pro's real pass is within 5 points of the best.
 // The pro's pass is valued as a decision (its expected value), whatever happened to it.
-import type { MomentsFile } from '../types'
 import { buildTrack, idxOf, PITCH_L, PITCH_W, posAt, toPortrait } from './track'
 import { findBestPass, findBravePass, SAME_PASS_M, scoredOptions, SEARCH } from './best'
 import { optionAt, RACE, simulateSpacePass } from './space'
 import { VALUE } from './value'
+import { proLofted } from './facts'
+import { loadMoments } from '../data/load'
 
 export interface KFit {
   k: number
@@ -33,7 +34,7 @@ export async function fitRiskAversion(
   /** value the pro's passes with their measured flight (lofted above 1.8 m), or all as ground passes */
   measuredLoft = true,
 ): Promise<KFit[]> {
-  const data: MomentsFile = await (await fetch('./moments.json')).json()
+  const data = { moments: await loadMoments() }
   const keep = { ...VALUE }
   const keepSearch = { ...SEARCH }
   const rows: KFit[] = []
@@ -84,7 +85,7 @@ export async function fitRiskAversion(
         const i = idxOf(tr, tk.pid)
         const end = toPortrait(m.actual.end.x, m.actual.end.y)
         const at = posAt(tr, tr.rec, i)
-        const loft = measuredLoft ? m.actual.lofted : false
+        const loft = measuredLoft ? proLofted(m) : false
         v =
           Math.hypot(end[0] - at[0], end[1] - at[1]) >= SAME_PASS_M
             ? optionAt(tr, i, end, undefined, RACE, loft).value
@@ -94,7 +95,7 @@ export async function fitRiskAversion(
       } else if (m.actual.intended_pid) {
         const i = idxOf(tr, m.actual.intended_pid)
         v =
-          measuredLoft && m.actual.lofted
+          measuredLoft && proLofted(m)
             ? optionAt(tr, i, posAt(tr, tr.rec, i), undefined, RACE, true).value
             : (scoredOptions(tr).find((o) => o.pid === m.actual.intended_pid)?.value ?? null)
       }

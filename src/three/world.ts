@@ -1,4 +1,6 @@
-import type { Moment } from '../types'
+import type { MomentData } from '../types'
+import { buildTrack } from '../game/track'
+import { findBestPass } from '../game/best'
 
 // three.js world: Y is up. Data (x along the pitch, y across, origin bottom-left)
 // maps to X = x - 52.5, Z = 34 - y. Seen from above with screen-up = +X this is the
@@ -13,7 +15,7 @@ export const wx = (x: number) => x - PITCH_L / 2
 export const wz = (y: number) => PITCH_W / 2 - y
 
 export interface World {
-  m: Moment
+  m: MomentData
   n: number
   nFrames: number
   pids: string[]
@@ -36,7 +38,7 @@ export interface World {
   pass1: number
 }
 
-export function buildWorld(m: Moment): World {
+export function buildWorld(m: MomentData): World {
   const first = m.frames[0].players
   const pids = first.map((p) => p.pid)
   const index = new Map(pids.map((p, i) => [p, i]))
@@ -97,7 +99,7 @@ export function buildWorld(m: Moment): World {
     nums: first.map((p) => p.num),
     att: first.map((p) => p.team === 'att'),
     youIdx: index.get(m.you_pid) ?? 0,
-    bestIdx: index.get(m.best_option_pid) ?? -1,
+    bestIdx: findBestPass(buildTrack(m)).idx, // may be a pass into space: the receiver is who to spot
     proIdx: proPid ? (index.get(proPid) ?? -1) : -1,
     px,
     pz,

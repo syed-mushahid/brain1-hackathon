@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scan-and-play/moment.schema.json",
+  "title": "Scan & Play moment",
+  "description": "One playable moment: raw facts only (tracking frames, the real pass and its outcome, match context, names). Everything the game judges (pass values, best option, difficulty, risk, feedback) is computed by the game at load time from these facts and src/game/model.config.ts. Coordinates: metres on a 105 x 68 pitch, origin bottom-left, the attacking team always attacks left -> right (+x). Player ids: A<jersey> = attacking team, D<jersey> = defending team.",
+  "type": "object",
+  "required": ["schema_version", "id", "match_id", "period", "clock", "frames", "you_pid", "passer_pid", "pass1_frame_index", "reception_frame_index", "actual", "context", "names"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1, "description": "Version of this contract. The game skips moments with a version it does not know." },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9-]+-[0-9]+$", "description": "Stable id <match_id>-<reception_frame>: the DFL tracking frame number (N) at which 'you' receive the ball. Also the file name (<id>.json) and the key for saved progress." },
+    "match_id": { "type": "string", "minLength": 1 },
+    "period": { "enum": [1, 2] },
+    "clock": { "type": "string", "pattern": "^[0-9]{2,3}:[0-9]{2}$", "description": "Match clock mm:ss at pass 1 (period 2 continues from 45:00)." },
+    "frames": {
+      "type": "array",
+      "minItems": 2,
+      "description": "10 fps frames from the lead-in before pass 1 to just after the reception. Every frame lists the same players (frame 0 defines the roster).",
+      "items": { "$ref": "#/$defs/frame" }
+    },
+    "you_pid": { "$ref": "#/$defs/pid", "description": "The player on the ball (you): receives pass 1 and makes the decision." },
+    "passer_pid": { "$ref": "#/$defs/pid", "description": "Who played pass 1 to you." },
+    "pass1_frame_index": { "type": "integer", "minimum": 0, "description": "Frame index at which pass 1 is kicked." },
+    "reception_frame_index": { "type": "integer", "minimum": 1, "description": "Frame index at which you receive the ball: the decision moment (the screen goes dark)." },
+    "hold_s": { "type": "number", "minimum": 0, "description": "Optional. How long the pro held the ball before pass 2 (s). Informational only." },
+    "actual": {
+      "type": "object",
+      "description": "What the pro really did (pass 2) and what happened to it, from event + tracking data.",
+      "required": ["target_pid", "intended_pid", "end", "length", "success", "outcome", "taker"],
+      "additionalProperties": false,
+      "properties": {
+        "target_pid": { "type": ["string", "null"], "description": "Receiver according to the event feed when the pass was completed, else null." },
+        "intended_pid": { "type": ["string", "null"], "description": "The teammate the pass was meant for: the receiver for completed passes; for failed passes the teammate closest to the ball's line of travel, or null." },
+        "end": { "$ref": "#/$defs/point", "description": "Where the ball was taken over (or went out of play)." },
+        "length": { "type": "number", "minimum": 0, "description": "Pass length (m): ball travel, or the distance to the intended teammate for a failed pass if longer." },
+        "success": { "type": "boolean", "description": "Event feed: pass completed." },
+        "outcome": { "enum": ["received", "intercepted", "out", "loose"], "description": "From tracking: who took the ball over." },
+        "taker": {
+          "description": "Who took the ball over and his run from the reception frame to the takeover (5 fps), or null (out / loose).",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["pid", "t", "run"],
+              "additionalProperties": false,
+              "properties": {
+                "pid": { "$ref": "#/$defs/pid" },
+                "t": { "type": "number", "minimum": 0, "description": "Seconds after the reception." },
+                "run": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } } }
+              }
+            }
+          ]
+        },
+        "ball_max_z": { "type": "number", "minimum": 0, "description": "Optional. Highest the ball got during pass 2 (m, measured). Fallback when absent: the pass counts as lofted only if actual.length > race.loftFrom (30 m) in model.config.ts; with it, lofted = ball_max_z > flight.loftedZ (1.8 m)." }
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "Match facts (DFL match information).",
+      "required": ["competition", "season", "matchday", "date", "home", "away", "result", "stadium", "attacking", "score", "minute"],
+      "additionalProperties": false,
+      "properties": {
+        "competition": { "type": "string" },
+        "season": { "type": "string" },
+        "matchday": { "type": "integer", "minimum": 0 },
+        "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "home": { "type": "string" },
+        "away": { "type": "string" },
+        "result": { "type": "string", "description": "Final result home:away." },
+        "stadium": { "type": ["string", "null"], "description": "Null when unknown: the match card leaves it out." },
+        "attacking": { "enum": ["home", "away"], "description": "Which side 'you' play for." },
+        "score": { "type": "string", "pattern": "^[0-9]+:[0-9]+$", "description": "Score home:away just before the moment." },
+        "minute": { "type": "integer", "minimum": 1, "description": "1-based match minute (period 2 continues from 46)." }
+      }
+    },
+    "names": {
+      "type": "object",
+      "description": "pid -> real name and line-up position. Fallback for a missing pid or null name: the player is shown as #<jersey>.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "pos"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": ["string", "null"] },
+          "pos": { "type": ["string", "null"], "description": "English abbreviation (GK, CB, ...), null for substitutes without one." }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pid": { "type": "string", "pattern": "^[AD][0-9]+$" },
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+    },
+    "player": {
+      "type": "object",
+      "required": ["pid", "num", "team", "x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "pid": { "$ref": "#/$defs/pid" },
+        "num": { "type": "integer", "minimum": 0 },
+        "team": { "enum": ["att", "def"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "required": ["t", "ball", "players"],
+      "additionalProperties": false,
+      "properties": {
+        "t": { "type": "number", "description": "Seconds from the first frame." },
+        "ball": {
+          "type": "object",
+          "required": ["x", "y"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "z": { "type": "number", "minimum": 0, "description": "Optional ball height (m). Fallback when absent: the 3D view arcs passes over 20 m with an estimated parabola." }
+          }
+        },
+        "players": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/player" } }
+      }
+    },
+    "play": {
+      "description": "Replay data, file <id>.play.json (optional: without it the pro's replay is unavailable and 'your pass' is simulated from the moment frames). Frames from the reception (index 0 = the moment's reception frame) through pass 2 and the takeover, 10 fps, ball z = height.",
+      "type": "object",
+      "required": ["schema_version", "id", "frames", "kick_index", "take_index"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 },
+        "id": { "type": "string" },
+        "frames": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/frame" } },
+        "kick_index": { "type": "number", "minimum": 0, "description": "Pass 2 kicked, in frames after the reception." },
+        "take_index": { "type": "number", "minimum": 0, "description": "Ball taken over, in frames after the reception." }
+      }
+    }
+  }
+}

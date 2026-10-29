@@ -13,6 +13,8 @@
 // should name the player who really won the ball (see RACE).
 import type { PassOption, Team } from '../types'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
+import { laneOpen, offsideBy, passDirection } from './facts'
+export { offsideBy, offsideLineV, OFFSIDE_TOL_M } from './facts'
 import { passEV, pSuccess, SLACK_BIAS } from './value'
 
 /** race margin used when no opponent can get near the pass at all (P(success) ~ 1) */
@@ -64,21 +66,6 @@ export function flight(L: number, lofted: boolean, P: RaceParams = RACE): Flight
 const STEP_M = 0.5
 const START_M = 1.5 // the first metre and a half is still at your feet
 
-/** Distance from the nearest defender ahead of the passer to the pass line (capped at 30 m). */
-function laneOpen(a: [number, number], b: [number, number], defs: [number, number][]): number {
-  const dx = b[0] - a[0]
-  const dy = b[1] - a[1]
-  const L2 = dx * dx + dy * dy
-  let best = 30
-  for (const [u, v] of defs) {
-    const t = ((u - a[0]) * dx + (v - a[1]) * dy) / Math.max(L2, 1e-6)
-    if (t <= 0) continue // behind the passer
-    const k = Math.min(1, t)
-    best = Math.min(best, Math.hypot(u - (a[0] + dx * k), v - (a[1] + dy * k)))
-  }
-  return best
-}
-
 export interface SpaceOutcome {
   /** where the ball was won, or where it crossed the line */
   end: [number, number]
@@ -99,22 +86,6 @@ export interface SpaceOutcome {
   /** the teammate who got it was offside when you passed: free kick to the opponents */
   offside?: boolean
 }
-
-/**
- * Offside (Law 11), same rule as offside_line() in extract_moments.py: judged when you pass (the
- * reception frame); a teammate is offside in the opponents' half when nearer their goal line than
- * both the ball and the second-last opponent, by more than OFFSIDE_TOL_M (tracking noise).
- * Portrait coordinates: attack is up (smaller v). Returns the v of the line.
- */
-export const OFFSIDE_TOL_M = 0.5
-export function offsideLineV(tr: Track): number {
-  const vs: number[] = []
-  for (let i = 0; i < tr.n; i++) if (!tr.att[i]) vs.push(posAt(tr, tr.rec, i)[1])
-  vs.sort((a, b) => a - b)
-  return Math.min(vs[1] ?? PITCH_L, tr.ball[tr.rec * 2 + 1], PITCH_L / 2) - OFFSIDE_TOL_M
-}
-/** metres a teammate is beyond the offside line (> 0 = offside) */
-export const offsideBy = (tr: Track, i: number, lineV = offsideLineV(tr)) => lineV - posAt(tr, tr.rec, i)[1]
 
 /**
  * Everyone's sprint time to any point, from their true position and velocity at reception.
@@ -252,7 +223,7 @@ export function optionAt(
     lane_open: r1(lane),
     progress: r1(progress),
     receiver_space: r1(space),
-    direction: progress >= 3 && progress >= dist / 2 ? 'forward' : progress <= -3 && -progress >= dist / 2 ? 'backward' : 'sideways',
+    direction: passDirection(dist, progress),
     value: ev.points,
     p: ev.p,
     epv: ev.epvTarget,

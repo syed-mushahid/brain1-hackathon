@@ -1,5 +1,5 @@
 // Options and the best pass in a moment, valued by expected value (value.ts).
-//   scoredOptions: every pass to a teammate's feet (from moments.json), re-valued; offside = 0.
+//   scoredOptions: every pass to a teammate's feet (facts.ts), valued; offside = 0.
 //   findBestPass:  the best of those, the pro's real through ball, and a ring of spots around every
 //                  onside teammate raced with the race model (space.ts), among passes with at least
 //                  MIN_BEST_P chance to arrive; a pass into space has to beat the best pass to feet by
@@ -9,6 +9,7 @@ import type { PassOption } from '../types'
 import { FPS, idxOf, PITCH_L, PITCH_W, posAt, toPortrait, type Track } from './track'
 import { arrivalTime, NO_OPPONENT_S, offsideBy, offsideLineV, optionAt, passRisk, RACE, simulateSpacePass } from './space'
 import { passEV } from './value'
+import { proLofted, teammateOptions } from './facts'
 
 export interface BestPass {
   o: PassOption
@@ -48,7 +49,7 @@ export function scoredOptions(tr: Track): PassOption[] {
   const hit = optCache.get(tr)
   if (hit) return hit
   const you = posAt(tr, tr.rec, tr.youIdx)
-  const out = tr.m.options
+  const out = teammateOptions(tr)
     .map((o): PassOption => {
       const target = posAt(tr, tr.rec, idxOf(tr, o.pid))
       const e = passEV(you, target, passRisk(tr, target)?.slack ?? NO_OPPONENT_S)
@@ -97,7 +98,7 @@ function choose(tr: Track): Choice {
     const p = posAt(tr, f, i)
     // valued with its measured flight (lofted when the ball went above 1.8 m); a lofted pass to
     // feet is a candidate too, since it isn't the ground pass to that teammate the options hold
-    const loft = m.actual.lofted
+    const loft = proLofted(m)
     const intoSpace = Math.hypot(end[0] - p[0], end[1] - p[1]) >= SAME_PASS_M
     if (i >= 0 && (intoSpace || loft)) {
       const e: [number, number] = intoSpace ? end : p

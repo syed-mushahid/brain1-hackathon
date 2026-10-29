@@ -3,6 +3,7 @@ import { idxOf, posAt, toPortrait, type Track } from './track'
 import { explain, type Breakdown } from './explain'
 import { findBestPass, findBravePass, SAME_VALUE, samePass, scoredOptions } from './best'
 import { RACE } from './space'
+import { proLofted } from './facts'
 import { SLACK_BIAS } from './value'
 import { arrivalTime, offsideBy, passKind, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
 import type { PassOption } from '../types'
@@ -75,7 +76,7 @@ export function snap(tr: Track, tap: [number, number]): { idx: number; dist: num
 
 export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const m = tr.m
-  // every option valued by expected value (best.ts / value.ts), not the heuristic in moments.json
+  // every option valued by expected value (best.ts / value.ts)
   const options = scoredOptions(tr)
   const valueOf = (pid: string | null) => options.find((o) => o.pid === pid)?.value ?? 0
   // the best pass may be to a teammate's feet or into space (best.ts)
@@ -120,7 +121,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const proIntoSpace =
     m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= 5
   // valued with its measured flight: a lofted pro pass (ball above 1.8 m) as a lofted ball
-  const proLoft = m.actual.lofted
+  const proLoft = proLofted(m)
   const proOpt: PassOption | null = proIntoSpace
     ? optionAt(tr, takerIdx, proEnd, undefined, RACE, proLoft)
     : proLoft && proIdx >= 0

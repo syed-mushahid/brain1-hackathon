@@ -1,18 +1,11 @@
-import type { Frame, Moment } from '../types'
+import type { MomentData, Play } from '../types'
 
 // The rest of each play (reception -> pass -> takeover), from plays.json. Only fetched when a
 // replay is watched, so the game itself starts with moments.json alone.
-
-export interface Play {
-  /** frames from the reception (index 0 = the moment's reception frame), 10 fps, ball z = height */
-  frames: Frame[]
-  /** pass 2 kicked / ball taken over, in frames after the reception */
-  kick_index: number
-  take_index: number
-}
+export type { Play }
 
 /** A moment with its play appended, plus where the pass and the takeover happen (frame indices). */
-export interface PlayedMoment extends Moment {
+export interface PlayedMoment extends MomentData {
   kickFrame: number
   takeFrame: number
 }
@@ -30,7 +23,7 @@ export function loadPlays(): Promise<Record<string, Play>> {
   return cache
 }
 
-export function withPlay(m: Moment, play: Play): PlayedMoment {
+export function withPlay(m: MomentData, play: Play): PlayedMoment {
   const rec = m.reception_frame_index
   return {
     ...m,
@@ -40,7 +33,7 @@ export function withPlay(m: Moment, play: Play): PlayedMoment {
   }
 }
 
-export async function loadPlayedMoment(m: Moment): Promise<PlayedMoment> {
+export async function loadPlayedMoment(m: MomentData): Promise<PlayedMoment> {
   const plays = await loadPlays()
   const play = plays[m.id]
   if (!play) throw new Error(`no replay for ${m.id}`)
