@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "manifest": "tsx scripts/build_manifest.ts",
-    "check": "tsx scripts/check_moments.ts"
+    "check": "tsx scripts/check_moments.ts",
+    "fit": "tsx scripts/fit_risk_aversion.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

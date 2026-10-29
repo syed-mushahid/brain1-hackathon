@@ -77,11 +77,14 @@ export const MODEL = {
   /** Expected value of a pass (value.ts):
    *  EV = P * (EPV(target) - EPV(ball)) - (1 - P) * k * EPV_opponent(target), shown on 0-100. [LOT] */
   value: {
-    /** risk aversion: a lost ball hurts k times its plain EPV [FIT] */
-    k: 5,
-    /** display scale: EV lo -> 0 points, hi -> 100 (2nd / 98th percentile of all options and searched spots at this k) [FIT] */
-    lo: -0.058,
-    hi: 0.0248,
+    /** risk aversion: a lost ball hurts k times its plain EPV [FIT]. Refitted on the 72 moments (npm run fit,
+     *  spaceGain 20 and runCone 60° kept): k 3.5 -> 39 %, 4 -> 43 %, 4.5 -> 49 %, 5 -> 55 %, 6 -> 58 % of the
+     *  pros' passes within 5 points of the best; target 40-60 % */
+    k: 4.5,
+    /** display scale: EV lo -> 0 points, hi -> 100 (2nd / 98th percentile of all options and searched spots, both
+     *  flights, at this k) [FIT] */
+    lo: -0.0871,
+    hi: 0.016,
   },
 
   /** The best pass and the brave option (best.ts). */

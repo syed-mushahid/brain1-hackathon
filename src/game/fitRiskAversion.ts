@@ -2,6 +2,7 @@
 // browser console of the dev server:
 //   const f = await import('/src/game/fitRiskAversion.ts')
 //   console.table(await f.fitRiskAversion())
+// or from node: npm run fit -- 3.5 4 4.5 5 (scripts/fit_risk_aversion.ts)
 // For every k it re-derives the 0-100 scale (2nd / 98th percentile of the EV of all passes to feet and
 // all searched spots), then measures how often the pro's real pass is within 5 points of the best.
 // The pro's pass is valued as a decision (its expected value), whatever happened to it.
@@ -53,12 +54,17 @@ export async function fitRiskAversion(
       for (let i = 0; i < tr.n; i++) {
         if (!tr.att[i] || i === tr.youIdx) continue
         const p = posAt(tr, tr.rec, i)
-        for (const r of [4, 8, 12])
-          for (let a = 0; a < 8; a++) {
-            const q: [number, number] = [p[0] + r * Math.cos((a * Math.PI) / 4), p[1] + r * Math.sin((a * Math.PI) / 4)]
+        const you = posAt(tr, tr.rec, tr.youIdx)
+        const { ringsM, dirs, loftMinM } = SEARCH
+        for (const r of ringsM)
+          for (let a = 0; a < dirs; a++) {
+            const q: [number, number] = [p[0] + r * Math.cos((a * 2 * Math.PI) / dirs), p[1] + r * Math.sin((a * 2 * Math.PI) / dirs)]
             if (q[0] < 1 || q[0] > PITCH_W - 1 || q[1] < 1 || q[1] > PITCH_L - 1) continue
-            const o = simulateSpacePass(tr, q)
-            if (o.option?.ev !== undefined) evs.push(o.option.ev)
+            // both flights, like the search (best.ts): lofted from best.loftMinM
+            for (const loft of Math.hypot(q[0] - you[0], q[1] - you[1]) >= loftMinM ? [false, true] : [false]) {
+              const o = simulateSpacePass(tr, q, RACE, loft)
+              if (o.option?.ev !== undefined) evs.push(o.option.ev)
+            }
           }
       }
     }
