@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { Moment, MomentData } from './types'
 import { buildTrack } from './game/track'
 import { loadMoments } from './data/load'
@@ -30,7 +30,8 @@ import type { ReplayMode } from './three/Replay3D'
 export const ROUNDS_PER_SESSION = 5
 
 interface Session {
-  kind: 'daily' | 'training'
+  /** test = one moment again and again (testing aid): nothing is recorded */
+  kind: 'daily' | 'training' | 'test'
   queue: Moment[]
   index: number
   brains: number[]
@@ -59,6 +60,16 @@ export default function App() {
   }, [])
 
   useEffect(() => sound.setMuted(profile.muted), [profile.muted])
+
+  // ?test=<id>: straight into that moment in test mode (bookmarkable, survives a reload)
+  const autoTest = useRef(new URLSearchParams(location.search).get('test'))
+  useEffect(() => {
+    if (!data || !autoTest.current) return
+    const m = data.moments.find((x) => x.id === autoTest.current)
+    autoTest.current = null
+    if (m) startTest(m)
+    else console.warn(`[test] no moment ${new URLSearchParams(location.search).get('test')}`)
+  }, [data])
 
   const setProfile = (p: Profile) => {
     setProfileState(p)
@@ -92,14 +103,43 @@ export default function App() {
     })
   }
 
+  /** Test mode: play moment m, then "Play again" replays it; nothing goes into your profile. */
+  const startTest = (m: Moment) => {
+    sound.unlock()
+    if (profile.proMode) void loadProScan3D()
+    setUrlTest(m.id)
+    setSummary(null)
+    setSession({
+      kind: 'test',
+      queue: [m],
+      index: 0,
+      brains: [],
+      settings: LEVEL_SETTINGS.normal,
+      result: null,
+      before: ratings(profile),
+      levelBefore: profile.level,
+    })
+  }
+
+  const endTest = () => {
+    setUrlTest(null)
+    setSession(null)
+    sound.crowdOff()
+  }
+
   const onResult = (res: RoundResult) => {
     if (!session || !current) return
-    setProfile(recordRound(profile, current.id, res.scores))
+    if (session.kind !== 'test') setProfile(recordRound(profile, current.id, res.scores)) // tests don't count
     setSession({ ...session, result: res, brains: [...session.brains, res.scores.brain] })
   }
 
   const next = () => {
     if (!session || !data) return
+    if (session.kind === 'test') {
+      // the same moment again (a new round: fresh scan, fresh decision)
+      setSession({ ...session, queue: [...session.queue, session.queue[0]], index: session.index + 1, result: null })
+      return
+    }
     if (session.brains.length >= ROUNDS_PER_SESSION) {
       const score = Math.round(session.brains.reduce((a, b) => a + b, 0) / session.brains.length)
       const { profile: p, usedFreeze } = completeDay(profile)
@@ -164,7 +204,12 @@ export default function App() {
 
   if (session && track) {
     const n = session.index + 1
-    const label = session.kind === 'daily' ? `Daily ${n}/${ROUNDS_PER_SESSION}` : `Training ${n}/${ROUNDS_PER_SESSION}`
+    const label =
+      session.kind === 'test'
+        ? `Test · try ${n}`
+        : session.kind === 'daily'
+          ? `Daily ${n}/${ROUNDS_PER_SESSION}`
+          : `Training ${n}/${ROUNDS_PER_SESSION}`
     const last = session.brains.length >= ROUNDS_PER_SESSION
     return (
       <>
@@ -175,14 +220,15 @@ export default function App() {
           settings={session.settings}
           label={label}
           onResult={onResult}
-          proMode={session.kind === 'training' && profile.proMode}
+          proMode={session.kind !== 'daily' && profile.proMode}
         >
           {session.result && (
             <ResultSheet
               result={session.result}
               onNext={next}
-              nextLabel={last ? 'See summary' : 'Next moment'}
+              nextLabel={session.kind === 'test' ? 'Play again' : last ? 'See summary' : 'Next moment'}
               onWatch3D={watch3D}
+              exit={session.kind === 'test' ? { label: `Moment ${current!.id} · back home`, onExit: endTest } : undefined}
             />
           )}
         </Round>
@@ -201,8 +247,18 @@ export default function App() {
       profile={profile}
       onDaily={() => start('daily')}
       onTraining={() => start('training')}
+      moments={data.moments}
+      onTest={startTest}
       onToggleMute={toggleMute}
       onTogglePro={togglePro}
     />
   )
+}
+
+/** Keep ?test=<id> in the address bar while testing a moment, so a reload or a bookmark comes back to it. */
+function setUrlTest(id: string | null) {
+  const u = new URL(location.href)
+  if (id) u.searchParams.set('test', id)
+  else u.searchParams.delete('test')
+  history.replaceState(null, '', u)
 }

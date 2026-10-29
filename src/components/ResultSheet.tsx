@@ -51,9 +51,11 @@ interface SheetProps {
   onNext: () => void
   nextLabel: string
   onWatch3D?: (mode: 'eyes' | 'tv', who: 'pro' | 'you') => void
+  /** test mode: a link back home under the buttons */
+  exit?: { label: string; onExit: () => void }
 }
 
-export function ResultSheet({ result, onNext, nextLabel, onWatch3D }: SheetProps) {
+export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: SheetProps) {
   const { scores } = result
   const brain = useCountUp(scores.brain, 1200, 650)
   const [collapsed, setCollapsed] = useState(false)
@@ -191,6 +193,11 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D }: SheetProps
           {nextLabel}
         </button>
       </div>
+      {exit && (
+        <button className="test-exit" onClick={exit.onExit}>
+          ← {exit.label}
+        </button>
+      )}
     </div>
   )
 }
