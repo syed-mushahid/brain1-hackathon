@@ -93,10 +93,10 @@ export class PitchRenderer {
   }
 
   /** Fit the pitch into a css box (keeps aspect ratio). */
-  resize(maxW: number, maxH: number): void {
+  resize(maxW: number, maxH: number, maxDpr = 2): void {
     const aspect = (PITCH_W + 2 * MARGIN) / (PITCH_L + 2 * MARGIN)
     const w = Math.max(120, Math.min(maxW, maxH * aspect))
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
+    this.dpr = Math.min(window.devicePixelRatio || 1, maxDpr)
     this.s = w / (PITCH_W + 2 * MARGIN)
     this.w = w
     this.h = (PITCH_L + 2 * MARGIN) * this.s
@@ -215,6 +215,14 @@ export class PitchRenderer {
         ctx.setTransform(dpr * vw.k, 0, 0, dpr * vw.k, dpr * vw.tx, dpr * vw.ty)
         this.drawYouRing(yu, yv, sc.time)
       }
+      if (sc.reveal) {
+        const R = sc.reveal
+        const lines: [number, number][] = [R.proEnd, R.best.alone ? R.best.end : R.best.ring]
+        if (R.chosenIdx >= 0) lines.push([sc.pos[R.chosenIdx * 2], sc.pos[R.chosenIdx * 2 + 1]])
+        else if (R.space) lines.push(R.space.end)
+        if (R.brave && R.show.brave) lines.push(R.brave.end)
+        this.youTag(yu, yv, vw, sc.visibleH ?? this.h, lines, true)
+      }
       return
     }
 
@@ -325,6 +333,7 @@ export class PitchRenderer {
       this.drawBall(bu, bv)
     }
     this.drawYouRing(yu, yv, sc.time)
+    if (sc.mode === 'decide') this.youTag(yu, yv, { k: 1, tx: 0, ty: 0 }, this.h, [], false)
   }
 
   /** Path of a cone from (u, v) facing `dir` (0 = up) with half-angle `half`, radius r metres. */
@@ -543,82 +552,52 @@ export class PitchRenderer {
       ctx.globalAlpha = 1
     }
     if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 || R.space ? C.mine : '#ff6b3d')
-    if (p > 0.7) this.endLabels(R, yu, yv, at, Math.min(1, (p - 0.7) / 0.2), sc.view ?? { k: 1, tx: 0, ty: 0 }, sc.visibleH ?? this.h)
   }
 
-  /** "You", "Pro", "Best" (and "Brave" when shown) next to the arrow ends, clear of the receiver's
-   *  ring; labels at the same spot merge ("Pro · Best"). Each goes where it stays on screen (above the
-   *  sheet) and covers the fewest player circles: beyond the end first, then around it. */
-  private endLabels(R: RevealDraw, yu: number, yv: number, at: (i: number) => [number, number], alpha: number, vw: View, visibleH: number): void {
+  /** A small "You" tag next to the player on the ball (from the reception on). It goes where it stays
+   *  on screen (above the results sheet) and covers the fewest players and pass lines: above him first,
+   *  then around him. `lines` = where the arrows from him end; `others` = draw clear of the other players. */
+  private youTag(u: number, v: number, vw: View, visibleH: number, lines: [number, number][], others: boolean): void {
     const { ctx, s } = this
-    const ends: { pt: [number, number]; parts: [string, string][] }[] = []
-    const add = (pt: [number, number], text: string, color: string) => {
-      const near = ends.find((e) => Math.hypot(e.pt[0] - pt[0], e.pt[1] - pt[1]) < 3.5)
-      if (near) near.parts.push([text, color])
-      else ends.push({ pt, parts: [[text, color]] })
-    }
-    if (R.tap) add(R.chosenIdx >= 0 ? at(R.chosenIdx) : R.space ? R.space.end : R.tap, 'You', C.mine)
-    add(R.proEnd, 'Pro', C.pro)
-    add(R.best.alone ? R.best.end : R.best.ring, 'Best', C.best)
-    if (R.brave && R.show.brave) add(R.brave.end, 'Brave', C.brave)
-    const fs = Math.max(10, 1.3 * s)
-    const sep = ' · '
+    const fs = Math.max(10, 1.25 * s)
     ctx.font = `800 ${fs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    const w = ctx.measureText('You').width + fs
+    const h = fs * 1.45
+    const x0 = this.X(u)
+    const y0 = this.Y(v)
+    let best = { score: Infinity, cx: 0, cy: 0 }
+    ;[0, 1, -1, 2, -2, 3, -3, 4].forEach((step, rank) => {
+      const a = -Math.PI / 2 + (step * Math.PI) / 4 // 0 = straight up
+      const [dx, dy] = [Math.cos(a), Math.sin(a)]
+      const off = 3 * s + Math.abs(dy) * (h / 2) + Math.abs(dx) * (w / 2) // clear of his yellow ring
+      const cx = x0 + dx * off
+      const cy = y0 + dy * off
+      const inside = (px: number, py: number, pad = 0) =>
+        px > cx - w / 2 - pad && px < cx + w / 2 + pad && py > cy - h / 2 - pad && py < cy + h / 2 + pad
+      let score = rank * 0.5
+      // on screen (through the camera) and above the results sheet
+      const [sx0, sy0, sx1, sy1] = [vw.k * (cx - w / 2) + vw.tx, vw.k * (cy - h / 2) + vw.ty, vw.k * (cx + w / 2) + vw.tx, vw.k * (cy + h / 2) + vw.ty]
+      if (sx0 < 2 || sx1 > this.w - 2 || sy0 < 2 || sy1 > visibleH - 2) score += 1000
+      if (others && this.at)
+        for (let i = 0; i < this.tr.n; i++)
+          if (i !== this.tr.youIdx && inside(this.X(this.at[i * 2]), this.Y(this.at[i * 2 + 1]), 1.5 * s)) score += 10
+      for (const [lu, lv] of lines)
+        for (let k = 1; k <= 12; k++) {
+          if (!inside(x0 + ((this.X(lu) - x0) * k) / 12, y0 + ((this.Y(lv) - y0) * k) / 12)) continue
+          score += 8
+          break
+        }
+      if (score < best.score) best = { score, cx, cy }
+    })
+    const { cx, cy } = best
+    ctx.fillStyle = C.you
+    ctx.beginPath()
+    ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2)
+    ctx.fill()
+    ctx.fillStyle = '#1a1400'
+    ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.textAlign = 'left'
-    ctx.globalAlpha = alpha
-    const placed: [number, number, number, number][] = [] // x0, y0, x1, y1 (canvas css px, before the view)
-    const circleR = 1.6 * s
-    for (const e of ends) {
-      const widths = e.parts.map(([t]) => ctx.measureText(t).width)
-      const w = widths.reduce((a, b) => a + b, 0) + ctx.measureText(sep).width * (e.parts.length - 1) + fs
-      const h = fs * 1.5
-      const d = Math.hypot(e.pt[0] - yu, e.pt[1] - yv)
-      const base = d > 0.5 ? Math.atan2(e.pt[1] - yv, e.pt[0] - yu) : -Math.PI / 2
-      let best = { score: Infinity, cx: 0, cy: 0 }
-      ;[0, 1, -1, 2, -2, 3, -3, 4].forEach((step, rank) => {
-        const a = base + (step * Math.PI) / 4
-        const [dx, dy] = [Math.cos(a), Math.sin(a)]
-        const off = 2.6 * s + Math.abs(dy) * (h / 2) + Math.abs(dx) * (w / 2)
-        const cx = this.X(e.pt[0]) + dx * off
-        const cy = this.Y(e.pt[1]) + dy * off
-        const [x0, y0, x1, y1] = [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
-        // on screen (through the camera) and above the results sheet
-        const sx0 = vw.k * x0 + vw.tx
-        const sx1 = vw.k * x1 + vw.tx
-        const sy0 = vw.k * y0 + vw.ty
-        const sy1 = vw.k * y1 + vw.ty
-        let score = rank * 0.5
-        if (sx0 < 2 || sx1 > this.w - 2 || sy0 < 2 || sy1 > visibleH - 2) score += 1000
-        for (let i = 0; i < this.tr.n; i++) {
-          const px = this.X(this.at ? this.at[i * 2] : 0)
-          const py = this.Y(this.at ? this.at[i * 2 + 1] : 0)
-          const nx = Math.max(x0, Math.min(x1, px))
-          const ny = Math.max(y0, Math.min(y1, py))
-          if (Math.hypot(px - nx, py - ny) < circleR) score += 10
-        }
-        for (const [a0, b0, a1, b1] of placed) if (x0 < a1 && x1 > a0 && y0 < b1 && y1 > b0) score += 50
-        if (score < best.score) best = { score, cx, cy }
-      })
-      const { cx, cy } = best
-      placed.push([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2])
-      ctx.fillStyle = 'rgba(10,16,32,0.82)'
-      ctx.beginPath()
-      ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2)
-      ctx.fill()
-      let x = cx - w / 2 + fs / 2
-      e.parts.forEach(([t, col], k) => {
-        if (k > 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.6)'
-          ctx.fillText(sep, x, cy)
-          x += ctx.measureText(sep).width
-        }
-        ctx.fillStyle = col
-        ctx.fillText(t, x, cy)
-        x += widths[k]
-      })
-    }
-    ctx.globalAlpha = 1
+    ctx.fillText('You', cx, cy + 0.5)
   }
 
   /** The player who won the ball: a ring where he stood, then his run to the ball. */

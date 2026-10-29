@@ -10,6 +10,7 @@ import { PlayerCard } from './PlayerCard'
 import { ShareButton } from './ShareButton'
 import { MomentPreview } from './MomentPreview'
 import { shareText } from '../lib/share'
+import { FEATURES } from '../lib/features'
 import { sound } from '../lib/sound'
 
 interface Props {
@@ -46,7 +47,6 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   const insight = homeInsight(profile, today)
   const card = (
     <>
-      {preview && !wide && <MomentPreview moment={preview} fit="band" />}
       <PlayerCard after={r} level={profile.level} locked={r.rounds < RATING_MIN_ROUNDS} />
       {insight && <p className={`insight ${insight.tone}`}>{insight.text}</p>}
     </>
@@ -109,12 +109,14 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
       <button className={`cta ${daily ? '' : 'ghost'}`} onClick={onTraining}>
         Free training · Level: {cap(profile.level)} <small className="cta-sub">(adapts to you)</small>
       </button>
-      <button className={`pro-toggle ${profile.proMode ? 'on' : ''}`} onClick={onTogglePro} role="switch" aria-checked={profile.proMode}>
-        <span className="knob" />
-        <span>
-          <b>Pro mode</b> <span className="badge">Beta</span> · scan in 3D first-person (training &amp; tests)
-        </span>
-      </button>
+      {FEATURES.proMode && (
+        <button className={`pro-toggle ${profile.proMode ? 'on' : ''}`} onClick={onTogglePro} role="switch" aria-checked={profile.proMode}>
+          <span className="knob" />
+          <span>
+            <b>Pro mode</b> <span className="badge">Beta</span> · scan in 3D first-person (training &amp; tests)
+          </span>
+        </button>
+      )}
       {onHowToPlay && (
         <button className="cta ghost how-btn" onClick={onHowToPlay}>
           How to play
@@ -138,13 +140,15 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
       <footer className="credit">Data: Deutsche Fußball Liga (DFL), Bassek et al. 2025, Scientific Data</footer>
     </div>
   )
-  if (!wide) return main
-  // desktop: the moment large on the left, card and buttons on the right
+  // the moment fills the whole screen behind everything (outside the animated layer: a transform
+  // there would pin the fixed background to it)
+  const bg = preview && <MomentPreview moment={preview} focusX={wide ? 0.33 : 0.5} />
   return (
-    <div className="home-wide fade-in">
-      <aside className="home-stage">{preview && <MomentPreview moment={preview} fit="whole" />}</aside>
-      {main}
-    </div>
+    <>
+      {bg}
+      {/* desktop: the card and buttons on the right, the moment showing on the left */}
+      {wide ? <div className="home-wide fade-in">{main}</div> : main}
+    </>
   )
 }
 

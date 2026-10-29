@@ -66,6 +66,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState<[number, number] | null>(null)
   const [profile, setProfileState] = useState<Profile>(loadProfile)
+  // Pro mode (3D first-person scan) is switched off for now: a saved "on" is ignored (lib/features.ts)
+  const proMode = FEATURES.proMode && profile.proMode
   const [session, setSession] = useState<Session | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
   const [replay, setReplay] = useState<{ moment: MomentData; mode: ReplayMode; bestIdx: number } | null>(null)
@@ -111,7 +113,7 @@ export default function App() {
   const start = (kind: Session['kind']) => {
     if (!data) return
     sound.unlock() // user gesture: allowed to start audio now
-    if (kind === 'training' && profile.proMode) void loadProScan3D() // warm up the 3D chunk
+    if (kind === 'training' && proMode) void loadProScan3D() // warm up the 3D chunk
     let queue: Moment[]
     if (kind === 'daily') queue = dailyMoments(data.moments)
     else {
@@ -136,7 +138,7 @@ export default function App() {
   /** Test mode: play moment m, then "Play again" replays it; nothing goes into your profile. */
   const startTest = (m: Moment) => {
     sound.unlock()
-    if (profile.proMode) void loadProScan3D()
+    if (proMode) void loadProScan3D()
     setUrlTest(m.id)
     setSummary(null)
     setSession({
@@ -264,7 +266,7 @@ export default function App() {
           settings={session.settings}
           label={label}
           onResult={onResult}
-          proMode={session.kind !== 'daily' && profile.proMode}
+          proMode={session.kind !== 'daily' && proMode}
         >
           {session.result && (
             <ResultSheet
