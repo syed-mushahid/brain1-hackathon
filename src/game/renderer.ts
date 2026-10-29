@@ -91,10 +91,10 @@ export class PitchRenderer {
   }
 
   /** Fit the pitch into a css box (keeps aspect ratio). */
-  resize(maxW: number, maxH: number, maxDpr = 2): void {
+  resize(maxW: number, maxH: number): void {
     const aspect = (PITCH_W + 2 * MARGIN) / (PITCH_L + 2 * MARGIN)
     const w = Math.max(120, Math.min(maxW, maxH * aspect))
-    this.dpr = Math.min(window.devicePixelRatio || 1, maxDpr)
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
     this.s = w / (PITCH_W + 2 * MARGIN)
     this.w = w
     this.h = (PITCH_L + 2 * MARGIN) * this.s

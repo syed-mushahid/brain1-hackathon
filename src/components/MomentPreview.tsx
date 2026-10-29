@@ -1,21 +1,18 @@
 import { useEffect, useRef } from 'react'
 import type { Moment } from '../types'
-import { buildTrack, PITCH_L, PITCH_W, sample } from '../game/track'
+import { buildTrack, sample } from '../game/track'
 import { PitchRenderer } from '../game/renderer'
 import { dirTo } from '../game/vision'
 
-// A real moment on a loop behind the home screen: the ball coming to "you" in the fog, a look over
-// the shoulder sweeping the pitch. The game's own renderer, one data frame per draw (~10 fps), filling
-// the screen like a cover image (centred on "you"); paused in a hidden tab and with reduced motion
-// (one still frame).
+// A real moment on a loop (home screen): the ball coming to "you" in the fog, a look over the
+// shoulder sweeping the pitch. The game's own renderer, one data frame per draw (~10 fps); paused
+// off screen, in a hidden tab and with reduced motion (one still frame).
 
 const STEP_MS = 100 // one 10 fps data frame per draw
 const HOLD_FRAMES = 12 // the picture rests on the reception before the loop restarts
 const SWEEP = 2.3 // rad: how far the look swings away from the ball
-const MARGIN = 2.5 // the renderer's grass around the pitch (m)
 
-/** `focusX`: where across the screen "you" should sit (0.5 = centre; desktop puts him left of the card). */
-export function MomentPreview({ moment, focusX = 0.5 }: { moment: Moment; focusX?: number }) {
+export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | 'whole' }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -28,6 +25,7 @@ export function MomentPreview({ moment, focusX = 0.5 }: { moment: Moment; focusX
     const ball = new Float32Array(2)
     const reduce = matchMedia('(prefers-reduced-motion: reduce)')
     let f = 0
+    let onScreen = true
     let timer = 0
 
     const draw = (frame: number) => {
@@ -55,22 +53,21 @@ export function MomentPreview({ moment, focusX = 0.5 }: { moment: Moment; focusX
       const w = wrap.clientWidth
       const h = wrap.clientHeight
       if (!w || !h) return
-      // cover: the pitch at least as wide and as tall as the screen (a background needs no retina pixels)
-      const aspect = (PITCH_W + 2 * MARGIN) / (PITCH_L + 2 * MARGIN)
-      const cw = Math.max(w, h * aspect)
-      r.resize(cw, cw / aspect, 1)
-      // centred on "you" (a little towards where the ball comes from), never showing past the pitch
-      const youU = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2]
-      const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
-      const ballV = tr.ball[1] // first frame
-      const clamp = (x: number, lo: number) => Math.max(lo, Math.min(0, x))
-      const tx = clamp(w * focusX - r.X(youU), w - r.w)
-      const ty = clamp(h / 2 - r.Y(0.8 * youV + 0.2 * ballV), h - r.h)
-      canvas.style.transform = `translate(${tx}px, ${ty}px)`
+      if (fit === 'whole') {
+        r.resize(w, h)
+        canvas.style.transform = ''
+      } else {
+        // a band: the pitch fills the width, centred on "you" (a little towards where the ball comes from)
+        r.resize(w, Infinity)
+        const ballV = tr.ball[1] // first frame
+        const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
+        const mid = r.Y(0.8 * youV + 0.2 * ballV)
+        canvas.style.transform = `translateY(${-Math.max(0, Math.min(r.h - h, mid - h / 2))}px)`
+      }
       draw(f)
     }
     const tick = () => {
-      if (document.hidden) return
+      if (!onScreen || document.hidden) return
       f = f >= tr.rec + HOLD_FRAMES ? 0 : f + 1
       draw(f)
     }
@@ -85,17 +82,20 @@ export function MomentPreview({ moment, focusX = 0.5 }: { moment: Moment; focusX
     run()
     const ro = new ResizeObserver(layout)
     ro.observe(wrap)
+    const io = new IntersectionObserver(([e]) => (onScreen = e.isIntersecting))
+    io.observe(wrap)
     reduce.addEventListener('change', run)
     return () => {
       clearInterval(timer)
       ro.disconnect()
+      io.disconnect()
       reduce.removeEventListener('change', run)
     }
-  }, [moment, focusX])
+  }, [moment, fit])
 
   return (
-    <div className="home-bg" ref={wrapRef} aria-hidden>
-      <canvas ref={canvasRef} />
+    <div className={`preview preview-${fit}`} ref={wrapRef}>
+      <canvas ref={canvasRef} role="img" aria-label="A real Bundesliga moment from above: the ball comes to you while you look around" />
     </div>
   )
 }
