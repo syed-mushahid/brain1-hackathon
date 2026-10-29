@@ -3,41 +3,43 @@
  "completed": 868,
  "lost": 123,
  "base_rate": 0.876,
- "blocked_passes": 163,
- "blocked_but_completed": 117,
+ "lofted_passes": 177,
+ "lofted_completed": 119,
+ "blocked_passes": 183,
+ "blocked_but_completed": 127,
  "completion_by_static_gap": {
   "0-0.5 m": [
-   71,
-   0.73
+   76,
+   0.68
   ],
   "0.5-1.0 m": [
-   92,
-   0.71
+   107,
+   0.7
   ],
   "1.0-1.5 m": [
-   115,
-   0.78
+   120,
+   0.79
   ],
   "1.5-2.0 m": [
-   98,
+   107,
    0.88
   ],
   "2.0-3.0 m": [
-   169,
-   0.88
+   177,
+   0.9
   ],
   "3.0-99 m": [
-   446,
-   0.96
+   404,
+   0.97
   ]
  },
  "fit_blocker_slack_s": null,
  "logloss_base_rate": 0.375,
- "logloss_spearman_sigma045": 0.537,
- "spearman_sigma045_best_bias": 0.55,
- "logloss_spearman_best_bias": 0.351,
- "fit_bias_s": 1.0,
- "fit_sigma_s": 0.95,
- "logloss_fit": 0.299,
- "auc_slack": 0.859
+ "logloss_spearman_sigma045": 0.614,
+ "spearman_sigma045_best_bias": 0.75,
+ "logloss_spearman_best_bias": 0.326,
+ "fit_bias_s": 1.1,
+ "fit_sigma_s": 0.9,
+ "logloss_fit": 0.275,
+ "auc_slack": 0.881
 }

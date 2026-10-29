@@ -321,7 +321,7 @@ export class PitchRenderer {
     const out = Float32Array.from(pos)
     const D = 3.3 // m: circles are 2.9 m wide plus their outline: leave a visible gap
     const pinned = (i: number) => top.includes(i)
-    for (let it = 0; it < 6; it++)
+    for (let it = 0; it < 12; it++)
       for (let i = 0; i < n; i++)
         for (let j = i + 1; j < n; j++) {
           let dx = out[j * 2] - out[i * 2]

@@ -112,14 +112,20 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
           ? 'The pro’s pass was intercepted.'
           : m.actual.success && ranM >= 6
             ? `The pro played it into space for #${takerNum} to run onto.`
-            : `The pro played ${proTo}${m.actual.success ? '' : ' – and lost the ball'}.`
+            : `The pro played ${proTo}${m.actual.outcome === 'received' ? '' : ' – and lost the ball'}.` // tracking, not the event flag
 
   // The pro's real pass, judged like yours: to a teammate's feet, or into space when the
   // receiver had to run onto it (then it is scored at the spot he collected it, not where he stood).
   const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
   const proIntoSpace =
     m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= 5
-  const proOpt: PassOption | null = proIntoSpace ? optionAt(tr, takerIdx, proEnd) : (options.find((o) => o.pid === proPid) ?? null)
+  // valued with its measured flight: a lofted pro pass (ball above 1.8 m) as a lofted ball
+  const proLoft = m.actual.lofted
+  const proOpt: PassOption | null = proIntoSpace
+    ? optionAt(tr, takerIdx, proEnd, undefined, RACE, proLoft)
+    : proLoft && proIdx >= 0
+      ? optionAt(tr, proIdx, posAt(tr, tr.rec, proIdx), undefined, RACE, true)
+      : (options.find((o) => o.pid === proPid) ?? null)
   // for "better than the pro": a pro pass that was lost (intercepted / out) is worth nothing
   const proValue = m.actual.outcome === 'received' ? (proOpt?.value ?? 0) : 0
   // risk = the closest an opponent came to cutting the pass out (only for passes that got through)
@@ -127,8 +133,8 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     m.actual.outcome !== 'received' || takerIdx < 0
       ? null
       : proIntoSpace
-        ? passRisk(tr, proEnd, arrivalTime(tr, takerIdx, proEnd))
-        : passRisk(tr, posAt(tr, tr.rec, takerIdx))
+        ? passRisk(tr, proEnd, arrivalTime(tr, takerIdx, proEnd, RACE, proLoft), RACE, proLoft)
+        : passRisk(tr, posAt(tr, tr.rec, takerIdx), undefined, RACE, proLoft)
 
   // Reading a pass into space. Taps aren't precise, so:
   //  - aimed near where the pro's completed pass was collected = you played the pro's pass, and you
@@ -142,7 +148,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
         takerIdx,
         team: 'att',
         run: run.pts,
-        t: arrivalTime(tr, takerIdx, proEnd),
+        t: arrivalTime(tr, takerIdx, proEnd, RACE, proLoft),
         rivalIdx: proRisk?.idx ?? -1,
         margin: proRisk ? Math.max(0, proRisk.slack) : Infinity,
         option: proOpt ?? optionAt(tr, takerIdx, proEnd),
@@ -333,10 +339,13 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   if (mineIsBest) {
     // the main reason it beat the pro's pass (the first point after the race line, for a pass into space)
     const why = proOpt ? base.breakdown.why.points[space ? 1 : 0] : null
+    const proMore = proValue > v + 0.5 // the pro's pass into space was worth more, but not enough to be "the best"
     return {
       ...base,
       headline: v > proValue ? 'Better than the pro!' : 'Best option!',
-      detail: `${ran}You found the best option. ${why ? `${cap(why)}.` : proLine}`,
+      detail: proMore
+        ? `${ran}You found the best option. The pro’s riskier ${proIntoSpace ? passKind(tr, takerIdx, proEnd) : 'pass'} was worth a little more (${Math.round(proValue)} vs ${Math.round(v)}).`
+        : `${ran}You found the best option. ${why ? `${cap(why)}.` : proLine}`,
       tone: 'great',
     }
   }

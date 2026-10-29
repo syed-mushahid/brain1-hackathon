@@ -7,7 +7,7 @@
 //   findBravePass: a pass worth more than the best but below MIN_BEST_P to arrive (the gamble).
 import type { PassOption } from '../types'
 import { FPS, idxOf, PITCH_L, PITCH_W, posAt, toPortrait, type Track } from './track'
-import { arrivalTime, NO_OPPONENT_S, offsideBy, offsideLineV, optionAt, passRisk, simulateSpacePass } from './space'
+import { arrivalTime, NO_OPPONENT_S, offsideBy, offsideLineV, optionAt, passRisk, RACE, simulateSpacePass } from './space'
 import { passEV } from './value'
 
 export interface BestPass {
@@ -29,7 +29,7 @@ export interface BestPass {
  *   runCone    a teammate running faster than RUN_SPEED_MIN is only looked for ahead of his run,
  *              within this half-angle (rad) of where he is heading; null = all round him
  */
-export const SEARCH = { spaceGain: 12, runCone: Math.PI / 3 as number | null }
+export const SEARCH = { spaceGain: 20, runCone: Math.PI / 3 as number | null }
 const RUN_SPEED_MIN = 2 // m/s
 const RINGS_M = [4, 8, 12]
 const DIRS = 8
@@ -95,8 +95,20 @@ function choose(tr: Track): Choice {
     const i = idxOf(tr, tk.pid)
     const end = toPortrait(m.actual.end.x, m.actual.end.y)
     const p = posAt(tr, f, i)
-    if (i >= 0 && Math.hypot(end[0] - p[0], end[1] - p[1]) >= SAME_PASS_M) {
-      proPass = { o: optionAt(tr, i, end), idx: i, intoSpace: true, end, run: tk.run.map(([x, y]) => toPortrait(x, y)), t: arrivalTime(tr, i, end) }
+    // valued with its measured flight (lofted when the ball went above 1.8 m); a lofted pass to
+    // feet is a candidate too, since it isn't the ground pass to that teammate the options hold
+    const loft = m.actual.lofted
+    const intoSpace = Math.hypot(end[0] - p[0], end[1] - p[1]) >= SAME_PASS_M
+    if (i >= 0 && (intoSpace || loft)) {
+      const e: [number, number] = intoSpace ? end : p
+      proPass = {
+        o: optionAt(tr, i, e, undefined, RACE, loft),
+        idx: i,
+        intoSpace,
+        end: e,
+        run: intoSpace ? tk.run.map(([x, y]) => toPortrait(x, y)) : null,
+        t: arrivalTime(tr, i, e, RACE, loft),
+      }
       spaces.push(proPass)
     }
   }

@@ -6,9 +6,10 @@
 //                   P = 1 / (1 + exp(-pi / (sqrt 3 * sigma) * (slack + bias)))
 //                 Spearman's sigma = 0.45 s with no bias scored worse than a constant guess on our data;
 //                 bias and sigma are fitted on 991 real DFL passes by calibrate_pass_model.py
-//                 (pass_model_calibration.json): bias 1.0 s, sigma 0.95 s, log-loss 0.299 vs 0.375
-//                 for the base rate, AUC of the slack 0.86. (Our race model gets defenders to the ball
-//                 about a second too early; the bias puts that right.)
+//                 (pass_model_calibration.json), each with its measured ground / lofted flight:
+//                 bias 1.1 s, sigma 0.90 s, log-loss 0.275 vs 0.375 for the base rate, AUC of the
+//                 slack 0.88. (Our race model gets defenders to the ball about a second too early;
+//                 the bias puts that right.)
 //   EV          = P * (EPV(target) - EPV(ball)) - (1 - P) * k * EPV_opponent(target)
 //                 k = risk aversion: how much more a lost ball hurts than its plain EPV says, fitted so
 //                 the pros' real passes come within 5 points of the best option in about half the moments
@@ -21,9 +22,9 @@ import { EPV_GRID } from './epvGrid'
 import { PITCH_L, PITCH_W } from './track'
 
 /** time-to-intercept uncertainty (s), fitted (Spearman / Shaw use 0.45) */
-export const TTI_SIGMA = 0.95
+export const TTI_SIGMA = 0.9
 /** shift of the race margin (s), fitted: the race model's defenders are a bit too quick */
-export const SLACK_BIAS = 1.0
+export const SLACK_BIAS = 1.1
 const K = Math.PI / (Math.sqrt(3) * TTI_SIGMA)
 
 /** Probability the pass reaches your team, from the race margin (s; > 0 = your side gets there first). */
@@ -67,10 +68,10 @@ export interface PassEV {
  * the EV of all options and searched spots in the 42 moments, for this k). Fitted by
  * scripts/fit_risk_aversion.mjs; an object so that script can try other values.
  */
-// fitted (with best.ts SEARCH): k alone tops out at 32 % of the pros' passes within 5 points of the
-// best (k = 8); with a 12-point premium for passes into space and spots only along a running teammate's
-// run, k = 3 is the smallest k that reaches 40 %: 16 / 37 = 43 %, best into space in 11 / 42 moments
-export const VALUE = { k: 3, lo: -0.0567, hi: 0.0221 }
+// fitted (with best.ts SEARCH) after the lofted-flight recalibration: k = 5 with a 20-point premium for
+// passes into space and spots only along a running teammate's run puts 16 / 37 = 43 % of the pros'
+// passes within 5 points of the best (k alone: 35 % at best), best into space in 7 / 42 moments
+export const VALUE = { k: 5, lo: -0.058, hi: 0.0248 }
 export const toPoints = (ev: number) => Math.round(1000 * Math.max(0, Math.min(1, (ev - VALUE.lo) / (VALUE.hi - VALUE.lo)))) / 10
 
 export function passEV(ball: [number, number], target: [number, number], slack: number): PassEV {

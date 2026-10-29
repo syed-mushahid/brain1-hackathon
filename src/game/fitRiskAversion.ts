@@ -8,7 +8,7 @@
 import type { MomentsFile } from '../types'
 import { buildTrack, idxOf, PITCH_L, PITCH_W, posAt, toPortrait } from './track'
 import { findBestPass, findBravePass, SAME_PASS_M, scoredOptions, SEARCH } from './best'
-import { optionAt, simulateSpacePass } from './space'
+import { optionAt, RACE, simulateSpacePass } from './space'
 import { VALUE } from './value'
 
 export interface KFit {
@@ -30,6 +30,8 @@ export async function fitRiskAversion(
   ks = [1, 2, 3, 4, 6],
   gains = [2, 5, 8, 12],
   cones: (number | null)[] = [null, Math.PI / 3],
+  /** value the pro's passes with their measured flight (lofted above 1.8 m), or all as ground passes */
+  measuredLoft = true,
 ): Promise<KFit[]> {
   const data: MomentsFile = await (await fetch('./moments.json')).json()
   const keep = { ...VALUE }
@@ -82,8 +84,20 @@ export async function fitRiskAversion(
         const i = idxOf(tr, tk.pid)
         const end = toPortrait(m.actual.end.x, m.actual.end.y)
         const at = posAt(tr, tr.rec, i)
-        v = Math.hypot(end[0] - at[0], end[1] - at[1]) >= SAME_PASS_M ? optionAt(tr, i, end).value : (scoredOptions(tr).find((o) => o.pid === tk.pid)?.value ?? null)
-      } else if (m.actual.intended_pid) v = scoredOptions(tr).find((o) => o.pid === m.actual.intended_pid)?.value ?? null
+        const loft = measuredLoft ? m.actual.lofted : false
+        v =
+          Math.hypot(end[0] - at[0], end[1] - at[1]) >= SAME_PASS_M
+            ? optionAt(tr, i, end, undefined, RACE, loft).value
+            : loft
+              ? optionAt(tr, i, at, undefined, RACE, true).value
+              : (scoredOptions(tr).find((o) => o.pid === tk.pid)?.value ?? null)
+      } else if (m.actual.intended_pid) {
+        const i = idxOf(tr, m.actual.intended_pid)
+        v =
+          measuredLoft && m.actual.lofted
+            ? optionAt(tr, i, posAt(tr, tr.rec, i), undefined, RACE, true).value
+            : (scoredOptions(tr).find((o) => o.pid === m.actual.intended_pid)?.value ?? null)
+      }
       if (v === null) continue
       pros++
       if (v >= b.o.value - 5) near++

@@ -74,6 +74,7 @@ CONTROL_S = 0.5           # ball staying at a player's feet this long = he has i
 TURN_DEG = 25.0           # ...or a touch that turns the ball by more than this
 SPEED_RATIO = 0.6         # ...or slows it to less than this share of its speed (or speeds it up 1/x)
 RUN_FPS = 5               # sampling rate of the taker's run written to moments.json
+LOFTED_Z = 1.8            # pass 2 whose ball rose above this (m) counts as lofted
 PLAY_AFTER_S = 1.5        # plays.json: keep following the play this long after the takeover...
 PLAY_MAX_S = 9.0          # ...but at most this long after the reception
 
@@ -671,6 +672,9 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
     take_pos = norm(ball[take_k, :2])
     if np.isnan(take_pos).any():
         take_pos = end_pos
+    # measured ball height during pass 2 (kick to takeover): lofted when it rose above LOFTED_Z
+    zs = ball[kick2:take_k + 1, 2]
+    max_z = float(np.nanmax(zs)) if np.isfinite(zs).any() else 0.0
 
     # --- options at the reception frame (the frozen decision moment)
     att = {c: norm(xy[rec, c]) for c in att_cols}
@@ -819,7 +823,8 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
                     intended_pid=intended,
                     end=dict(x=round(float(take_pos[0]), 1), y=round(float(take_pos[1]), 1)),
                     length=round(length, 1), success=bool(success),
-                    outcome=outcome, taker=taker),
+                    outcome=outcome, taker=taker,
+                    ball_max_z=round(max_z, 1), lofted=bool(max_z > LOFTED_Z)),
         pro_was_best=(intended == best_pid),
         context=context, names=names,
         difficulty=diff, n_close_options=n_close,
@@ -832,7 +837,7 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
         _calib=dict(pos=[norm(xy[kick2, c]) for c in cols], prev=[norm(xy[max(0, kick2 - 5), c]) for c in cols],
                     att=[bool(tr.teams[c] == team) for c in cols], passer=cols.index(cb),
                     taker=cols.index(take_col) if take_col is not None and take_col in cols else None,
-                    take_pos=take_pos,
+                    take_pos=take_pos, max_z=max_z,
                     intended=next((k for k, c in enumerate(cols) if pid_of(c) == intended), None)),
         _play=dict(frames=play, kick_index=round((kick2 - rec) / step, 1),
                    take_index=round((take_k - rec) / step, 1)),

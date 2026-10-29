@@ -4,8 +4,8 @@
 import type { Moment, PassOption, Team } from '../types'
 import { FPS, idxOf, posAt, toPortrait, type Track } from './track'
 import { scanParts } from './scoring'
-import { scoredOptions, type BestPass } from './best'
-import { VALUE } from './value'
+import { scoredOptions, SEARCH, type BestPass } from './best'
+import { toPoints, VALUE } from './value'
 import { offsideBy, offsideLineV, OFFSIDE_TOL_M, passKind, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
 import { lookWord, RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
@@ -72,6 +72,7 @@ export interface Breakdown {
 
 const metres = (x: number) => `${Math.round(Math.abs(x))} m`
 
+const cap = (t: string) => t.replace(/^./, (c) => c.toUpperCase())
 const pct = (p: number) => `${Math.round(p * 100)}%`
 const goalPct = (epv: number) => `${(epv * 100).toFixed(1)}%`
 
@@ -90,7 +91,8 @@ export function reasons(a: PassOption, aName: string, b: PassOption, bName: stri
   if (pa - pb >= 0.05) out.push([(pa - pb) * 100, `${aName} was safer: ${pct(pa)} vs ${pct(pb)} chance to reach a teammate`])
   if (ea - eb >= 0.003)
     out.push([(ea - eb) * 1500, `${aName} put the ball in a more dangerous spot: ${goalPct(ea)} vs ${goalPct(eb)} of attacks from there end in a goal`])
-  if (out.length === 0) out.push([0, `${aName} scored a little higher overall (${Math.round(a.value)} vs ${Math.round(b.value)})`])
+  if (out.length === 0)
+    out.push([0, a.value >= b.value ? `${aName} scored a little higher overall (${Math.round(a.value)} vs ${Math.round(b.value)})` : `${aName} and ${bName} were about as good`])
   const list = out.sort((x, y) => y[0] - x[0]).map((x) => x[1])
   // be honest about the price: a better pass can still be the riskier one
   if (pb - pa >= 0.05) list.push(`Trade-off: ${aName} was riskier – ${pct(pa)} vs ${pct(pb)} chance to reach a teammate`)
@@ -194,6 +196,11 @@ export function explain(
       title = 'You and the pro found equally good passes'
       points.push(`Yours: ${reasons(myOpt, myName, pro, proName)[0].replace(/^./, (c) => c.toLowerCase())}`)
       points.push(`The pro’s: ${reasons(pro, proName, myOpt, myName)[0].replace(/^./, (c) => c.toLowerCase())}`)
+    } else if (myOpt && mineIsBest && pro && pro.value > myOpt.value + 0.5) {
+      // the pro's pass into space was worth more, but not by the margin a pass into space needs
+      title = `${cap(proName)} was worth a little more`
+      points.push(...reasons(pro, proName, myOpt, myName))
+      points.push(`A pass into space only counts as the best option when it’s worth ${SEARCH.spaceGain}+ more than the best pass to feet – it is harder to time`)
     } else if (myOpt && mineIsBest) {
       title = pro ? `Why ${myName} beat ${proName}` : 'You found the best pass'
       points.push(...(pro ? reasons(myOpt, myName, pro, proName) : [strengths(myOpt, myName)]))
@@ -233,7 +240,7 @@ export function explain(
     risks.push(`Offside when you passed: ${offside.join(', ')} beyond the offside line – a pass to them is a free kick for the opponents`)
   points.push(...risks, proLine)
   const note =
-    `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, with a lost ball counting ${VALUE.k}× (risk aversion, fitted on the pros’ choices), on a 0–100 scale (72 = no change). ` +
+    `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, with a lost ball counting ${VALUE.k}× (risk aversion, fitted on the pros’ choices), on a 0–100 scale (${Math.round(toPoints(0))} = no change). ` +
     `P comes from a race model, Spearman-style (2017): the ball travels at ${RACE.ballSpeed} m/s (over ${RACE.loftFrom} m it’s lofted); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
     `Goal chances: Expected Possession Value grid by Laurie Shaw (LaurieOnTracking, MIT licence). ` +
     `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes. ` +

@@ -1,7 +1,8 @@
 // "Your pass" replay: what the race model says happens after YOUR pass, as frames the 2D and
 // 3D replays can play like the real ones.
-//   - the ball leaves your feet at the decision moment at RACE.ballSpeed towards where you aimed
-//     (lofted when long), stops there, and is taken by the race winner at the time the model gave;
+//   - the ball leaves your feet at the decision moment towards where you aimed, with the model's
+//     flight (space.ts flight(): ground at RACE.ballSpeed, or a 30° lofted arc beyond RACE.loftFrom),
+//     stops there, and is taken by the winner at the time the model gave;
 //   - the winner keeps running for his reaction time, then sprints to the spot (the same path the
 //     model raced), and carries on with the ball; the quickest player of the other team chases;
 //   - everyone else moves as they really did in the match (plays.json): lifelike, but they were
@@ -9,7 +10,7 @@
 import type { Frame, Moment } from '../types'
 import { withPlay, type Play, type PlayedMoment } from '../lib/plays'
 import type { RoundResult } from './evaluate'
-import { RACE } from './space'
+import { flight, RACE } from './space'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
 
 export interface PlayStory {
@@ -25,7 +26,6 @@ export type StoryMoment = PlayedMoment & { story: PlayStory }
 const AFTER_S = 1.5 // keep playing this long after the ball is won
 const CARRY_SPEED = 3 // m/s, the winner carries the ball on
 const CHASE_STOP_M = 1.5 // the chaser stops this close to the winner
-const LOFT_PEAK = (L: number) => Math.min(9, 0.12 * L)
 
 /** The pro's real play, with its story. */
 export function proStory(m: PlayedMoment): StoryMoment {
@@ -57,15 +57,15 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   } else if (res.chosenIdx >= 0) {
     taker = res.chosenIdx
     end = posAt(tr, rec, taker)
-    tWin = Math.hypot(end[0] - you[0], end[1] - you[1]) / RACE.ballSpeed
+    tWin = flight(Math.hypot(end[0] - you[0], end[1] - you[1]), false).arrive
     outcome = res.headline === 'Offside!' ? 'offside' : 'received'
   } else return null // no pass (time ran out)
 
   const L = Math.hypot(end[0] - you[0], end[1] - you[1])
   const ux = (end[0] - you[0]) / Math.max(L, 1e-6)
   const uy = (end[1] - you[1]) / Math.max(L, 1e-6)
-  const tBall = L / RACE.ballSpeed
-  const lofted = L > RACE.loftFrom
+  const F = flight(L, L > RACE.loftFrom) // same flight as the race (lofted beyond 30 m)
+  const tBall = F.arrive
   const out = taker < 0
   const total = (out ? tBall + 1 : Math.max(tWin, tBall) + AFTER_S) * FPS
 
@@ -123,9 +123,9 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
     // ball: travelling, then waiting at the spot, then at the winner's feet
     let ball: [number, number]
     let z = 0
-    const s = Math.min(t * RACE.ballSpeed, out ? L + 3 : L)
+    const s = Math.min((t / Math.max(tBall, 1e-6)) * L, out ? L + 3 : L) // constant ground speed
     ball = [you[0] + ux * s, you[1] + uy * s]
-    if (lofted && t < tBall) z = 4 * LOFT_PEAK(L) * (t / tBall) * (1 - t / tBall)
+    if (t < tBall) z = F.z(s)
     let tp: [number, number] | null = null
     if (takerRun) {
       if (t < tWin) tp = takerRun(t, end, 0)

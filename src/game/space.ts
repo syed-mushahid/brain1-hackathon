@@ -30,7 +30,37 @@ export interface RaceParams {
 // completed, 6 / 6 intercepted). Giving near ties to your teammate was tried: it lost 3 of the real
 // interceptions (they are close races), so a tap that matches the pro's pass uses the real outcome instead.
 export const RACE: RaceParams = { ballSpeed: 15, loftFrom: 30, react: 0.5, reactMates: 0.4, runSpeed: 7, reach: 1 }
-const LOFT_LANDING = 0.2
+/**
+ * Lofted passes (taps beyond loftFrom, or a pro pass whose measured height went above 1.8 m): a 30°
+ * launch arc. The ball moves at its ground speed v0·cos 30° (v0 from the range), can only be reached
+ * where it is below LOFT_REACH_Z (just after the kick and as it comes down), and the receiver needs
+ * LOFT_CONTROL_S extra to control a dropping ball.
+ */
+const LOFT_ANGLE = Math.PI / 6
+const LOFT_REACH_Z = 2.0
+export const LOFT_CONTROL_S = 0.5
+const G = 9.81
+
+export interface Flight {
+  /** time the ball reaches distance s along its path (s) */
+  t: (s: number) => number
+  /** height there (m) */
+  z: (s: number) => number
+  /** can a player reach it there (below head height, and off the passer's feet)? */
+  reachable: (s: number) => boolean
+  /** arrival at the end of the path, and the extra control time the receiver needs */
+  arrive: number
+  control: number
+}
+
+export function flight(L: number, lofted: boolean, P: RaceParams = RACE): Flight {
+  if (!lofted || L < 1e-3)
+    return { t: (s) => s / P.ballSpeed, z: () => 0, reachable: (s) => s >= START_M, arrive: L / P.ballSpeed, control: 0 }
+  const v0 = Math.sqrt((L * G) / Math.sin(2 * LOFT_ANGLE))
+  const vx = v0 * Math.cos(LOFT_ANGLE)
+  const z = (s: number) => Math.max(0, s * Math.tan(LOFT_ANGLE) * (1 - s / L))
+  return { t: (s) => s / vx, z, reachable: (s) => s >= START_M && z(s) < LOFT_REACH_Z, arrive: L / vx, control: LOFT_CONTROL_S }
+}
 const STEP_M = 0.5
 const START_M = 1.5 // the first metre and a half is still at your feet
 
@@ -125,8 +155,6 @@ function race(tr: Track, P: RaceParams) {
  */
 export const BLOCKER_SLACK: number | null = null
 
-/** Where on the path to `target` (length L) the ball can first be reached, by distance from "you". */
-const reachableFrom = (L: number, P: RaceParams) => (L > P.loftFrom ? L * (1 - LOFT_LANDING) : START_M)
 
 /**
  * Risk levels for passRisk's slack. The model is too simple to say "this pass would be cut out"
@@ -150,38 +178,57 @@ export interface Risk {
   at: [number, number]
 }
 
-export function passRisk(tr: Track, target: [number, number], tRecv?: number, P: RaceParams = RACE): Risk | null {
+export function passRisk(
+  tr: Track,
+  target: [number, number],
+  tRecv?: number,
+  P: RaceParams = RACE,
+  lofted?: boolean,
+): Risk | null {
   const { you, timeTo, blocks } = race(tr, P)
   const L = Math.hypot(target[0] - you[0], target[1] - you[1])
   if (L < 1e-3) return null
   const ux = (target[0] - you[0]) / L
   const uy = (target[1] - you[1]) / L
-  const tEnd = tRecv ?? L / P.ballSpeed
+  const B = flight(L, lofted ?? L > P.loftFrom, P)
+  const tEnd = tRecv ?? B.arrive + B.control
   let best: Risk | null = null
   for (let i = 0; i < tr.n; i++) {
     if (tr.att[i]) continue
-    for (let s = Math.min(reachableFrom(L, P), L); s <= L + 1e-6; s += STEP_M) {
+    for (let s = Math.min(START_M, L); s <= L + 1e-6; s += STEP_M) {
+      if (!B.reachable(s) && s < L - STEP_M) continue // over his head
       const q: [number, number] = [you[0] + ux * s, you[1] + uy * s]
-      let slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(s / P.ballSpeed, tEnd) : s / P.ballSpeed)
-      if (BLOCKER_SLACK !== null && blocks(i, q, s / P.ballSpeed)) slack = Math.min(slack, BLOCKER_SLACK)
+      let slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(B.t(s), tEnd) : B.t(s))
+      if (BLOCKER_SLACK !== null && blocks(i, q, B.t(s))) slack = Math.min(slack, BLOCKER_SLACK)
       if (!best || slack < best.slack) best = { idx: i, slack, at: q }
     }
   }
   return best
 }
 
-/** When teammate `idx` can collect a ball played to `end`: the ball's arrival or his, whichever is later. */
-export function arrivalTime(tr: Track, idx: number, end: [number, number], P: RaceParams = RACE): number {
+/** When teammate `idx` has a ball played to `end` under control: the ball's arrival or his, whichever
+ *  is later (plus the control time for a lofted ball). */
+export function arrivalTime(tr: Track, idx: number, end: [number, number], P: RaceParams = RACE, lofted?: boolean): number {
   const { you, timeTo } = race(tr, P)
-  return Math.max(Math.hypot(end[0] - you[0], end[1] - you[1]) / P.ballSpeed, timeTo(idx, end))
+  const L = Math.hypot(end[0] - you[0], end[1] - you[1])
+  const B = flight(L, lofted ?? L > P.loftFrom, P)
+  return Math.max(B.arrive, timeTo(idx, end)) + B.control
 }
 
 /** A pass to `end`, collected there by teammate `idx` at time tWin, valued by its expected value
  *  (value.ts). dist / progress / lane / space are kept as plain facts for the Why? table. */
-export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: number, P: RaceParams = RACE): PassOption {
+export function optionAt(
+  tr: Track,
+  idx: number,
+  end: [number, number],
+  tWin?: number,
+  P: RaceParams = RACE,
+  lofted?: boolean,
+): PassOption {
   const { you, timeTo } = race(tr, P)
   const dist = Math.hypot(end[0] - you[0], end[1] - you[1])
-  const t = tWin ?? Math.max(dist / P.ballSpeed, timeTo(idx, end))
+  const loft = lofted ?? dist > P.loftFrom
+  const t = tWin ?? arrivalTime(tr, idx, end, P, loft)
   const defs: [number, number][] = []
   let nearest = Infinity // how much later the quickest opponent reaches the same spot (s)
   for (let i = 0; i < tr.n; i++) {
@@ -190,11 +237,13 @@ export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: n
     nearest = Math.min(nearest, timeTo(i, end) - t)
   }
   const progress = you[1] - end[1] // attack is up the screen
-  // a lofted pass can only be blocked where it comes down (same rule as the race)
-  const k = dist > P.loftFrom ? 1 - LOFT_LANDING : 0
+  // a lofted pass can only be blocked where it is low again, as it comes down
+  const B = flight(dist, loft, P)
+  let k = 0
+  if (loft) for (let s = dist; s > 0 && B.reachable(s); s -= STEP_M) k = s / dist
   const lane = laneOpen([you[0] + (end[0] - you[0]) * k, you[1] + (end[1] - you[1]) * k], end, defs)
   const space = Math.min(30, Math.max(0, nearest) * P.runSpeed) // that head start, in metres of running
-  const ev = passEV(you, end, passRisk(tr, end, t, P)?.slack ?? NO_OPPONENT_S)
+  const ev = passEV(you, end, passRisk(tr, end, t, P, loft)?.slack ?? NO_OPPONENT_S)
   const r1 = (x: number) => Math.round(x * 10) / 10
   return {
     pid: tr.pids[idx],
@@ -220,7 +269,7 @@ export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: n
  *      (passRisk) takes it where he meets the ball. Nobody reaches a ball rolling out: out of play.
  * So a pass is completed exactly when it is more likely than not to arrive.
  */
-export function simulateSpacePass(tr: Track, target: [number, number], P: RaceParams = RACE): SpaceOutcome {
+export function simulateSpacePass(tr: Track, target: [number, number], P: RaceParams = RACE, lofted?: boolean): SpaceOutcome {
   const { you, starts, timeTo } = race(tr, P)
   // ball path, cut at the touchline / goal line
   const dx = target[0] - you[0]
@@ -238,6 +287,8 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
   }
   const rests = pathL >= L - 1e-6 // the ball stops at the tap point (it is on the pitch)
   const at = (s: number): [number, number] => [you[0] + ux * s, you[1] + uy * s]
+  const loft = lofted ?? L > P.loftFrom
+  const B = flight(L, loft, P)
 
   // 1. your teammate who gets there first
   let w = -1
@@ -246,19 +297,20 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
   for (let i = 0; i < tr.n; i++) {
     if (!tr.att[i] || i === tr.youIdx) continue
     if (rests) {
-      const t = Math.max(L / P.ballSpeed, timeTo(i, at(L)))
+      const t = Math.max(B.arrive, timeTo(i, at(L))) + B.control
       if (t < T) [w, T, Q] = [i, t, at(L)]
     } else
-      for (let s = Math.min(reachableFrom(L, P), pathL); s <= pathL + 1e-6; s += STEP_M) {
+      for (let s = Math.min(START_M, pathL); s <= pathL + 1e-6; s += STEP_M) {
+        if (!B.reachable(s)) continue
         const q = at(s)
-        if (timeTo(i, q) <= s / P.ballSpeed) {
-          if (s / P.ballSpeed < T) [w, T, Q] = [i, s / P.ballSpeed, q]
+        if (timeTo(i, q) <= B.t(s)) {
+          if (B.t(s) < T) [w, T, Q] = [i, B.t(s), q]
           break
         }
       }
   }
   // 2. how likely that pass is to arrive (to the line, if nobody can stop it going out)
-  const risk = passRisk(tr, w >= 0 ? Q : at(pathL), w >= 0 ? T : undefined, P)
+  const risk = passRisk(tr, w >= 0 ? Q : at(pathL), w >= 0 ? T : undefined, P, loft)
   const p = risk ? pSuccess(risk.slack) : 1
   const run = (i: number, end: [number, number]): [number, number][] => [posAt(tr, tr.rec, i), starts[i], end]
   // 3. the outcome
@@ -269,13 +321,13 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
       takerIdx: risk.idx,
       team: 'def',
       run: run(risk.idx, end),
-      t: Math.hypot(end[0] - you[0], end[1] - you[1]) / P.ballSpeed,
+      t: B.t(Math.hypot(end[0] - you[0], end[1] - you[1])),
       rivalIdx: w,
       margin: -(risk.slack + SLACK_BIAS),
       option: null,
     }
   }
-  if (w < 0) return { end: at(pathL), takerIdx: -1, team: null, run: [], t: pathL / P.ballSpeed, rivalIdx: -1, margin: 0, option: null }
+  if (w < 0) return { end: at(pathL), takerIdx: -1, team: null, run: [], t: B.t(pathL), rivalIdx: -1, margin: 0, option: null }
   return {
     end: Q,
     takerIdx: w,
@@ -284,7 +336,7 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
     t: T,
     rivalIdx: risk?.idx ?? -1,
     margin: risk ? risk.slack + SLACK_BIAS : Infinity,
-    ...(offsideBy(tr, w) > 0 ? { option: null, offside: true } : { option: optionAt(tr, w, Q, T, P) }),
+    ...(offsideBy(tr, w) > 0 ? { option: null, offside: true } : { option: optionAt(tr, w, Q, T, P, loft) }),
   }
 }
 

@@ -60,6 +60,9 @@ export interface Moment {
     outcome: 'received' | 'intercepted' | 'out' | 'loose'
     /** who took the ball over: his run from the reception frame to the takeover (t s later) */
     taker: { pid: string; t: number; run: [number, number][] } | null
+    /** highest the ball got during the pass (m, measured), and lofted = above 1.8 m */
+    ball_max_z?: number
+    lofted?: boolean
   }
   pro_was_best: boolean
   /** match facts (DFL match information) */

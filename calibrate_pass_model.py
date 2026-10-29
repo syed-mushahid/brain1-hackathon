@@ -4,7 +4,8 @@ The game (src/game/space.ts + value.ts) turns a race margin into P(success) with
 curve (Spearman 2017):  P = 1 / (1 + exp(-pi / (sqrt(3) * sigma) * (slack + bias))).
 `slack` = how much later than the ball (or, at the target, than the receiver) the quickest
 opponent can get to the ball's path, with the game's race settings (reaction 0.5 s opponents /
-0.4 s teammates, 7 m/s sprint, 15 m/s ball, 1 m reach, passes > 30 m lofted); an opponent already
+0.4 s teammates, 7 m/s sprint, 15 m/s ball, 1 m reach; a pass whose measured height went above
+1.8 m flies a 30° arc, reachable only below 2 m, +0.5 s to control it); an opponent already
 within reach of the path when the ball passes him (a static blocker) gives BLOCKED_SLACK.
 
 This script measures that slack for every real pass 2 the pipeline finds (state at the moment
@@ -26,10 +27,22 @@ import numpy as np
 import extract_moments as em
 
 # race settings: keep in step with RACE in src/game/space.ts
-BALL_SPEED, LOFT_FROM, LOFT_LANDING = 15.0, 30.0, 0.2
+BALL_SPEED = 15.0
+LOFT_ANGLE, LOFT_REACH_Z, LOFT_CONTROL_S, G = math.pi / 6, 2.0, 0.5, 9.81   # space.ts flight()
+LOFTED_Z = 1.8   # a real pass is lofted when its measured ball height went above this
 REACT_OPP, REACT_MATE, RUN_SPEED, REACH = 0.5, 0.4, 7.0, 1.0
 START_M, STEP_M, FPS_RAW = 1.5, 0.5, 25
 BLOCKER_SLACKS = [None, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0]   # tried for space.ts BLOCKED_SLACK (None = no rule)
+
+
+def flight(L, lofted):
+    """space.ts flight(): ball time t(s), height z(s), reachable(s), arrival and control time."""
+    if not lofted:
+        return (lambda s: s / BALL_SPEED, lambda s: 0.0, lambda s: s >= START_M, L / BALL_SPEED, 0.0)
+    v0 = math.sqrt(L * G / math.sin(2 * LOFT_ANGLE))
+    vx = v0 * math.cos(LOFT_ANGLE)
+    z = lambda s: max(0.0, s * math.tan(LOFT_ANGLE) * (1 - s / L))
+    return (lambda s: s / vx, z, lambda s: s >= START_M and z(s) < LOFT_REACH_Z, L / vx, LOFT_CONTROL_S)
 
 
 def slack_of(cal, target, recv):
@@ -49,15 +62,18 @@ def slack_of(cal, target, recv):
     def time_to(i, q):
         return react[i] + max(0.0, float(np.linalg.norm(q - start[i])) - REACH) / RUN_SPEED
 
-    t_end = max(L / BALL_SPEED, time_to(recv, target)) if recv is not None else L / BALL_SPEED
-    s0 = min(L * (1 - LOFT_LANDING) if L > LOFT_FROM else START_M, L)
+    t_of, _, reachable, arrive, control = flight(L, cal['max_z'] > LOFTED_Z)
+    t_end = (max(arrive, time_to(recv, target)) if recv is not None else arrive) + control
     u = (target - you) / L
     best = None
     for i in np.flatnonzero(~att):
-        s = s0
+        s = min(START_M, L)
         while s <= L + 1e-6:
+            if not reachable(s) and s < L - STEP_M:   # over his head
+                s += STEP_M
+                continue
             q = you + u * s
-            t_ball = s / BALL_SPEED
+            t_ball = t_of(s)
             tb = max(t_ball, t_end) if s >= L - STEP_M else t_ball
             sl = time_to(i, q) - tb   # (static blockers are applied in fit(), with a fitted slack)
             best = sl if best is None or sl < best else best
@@ -77,13 +93,16 @@ def static_gap(cal, target):
     if L < 1e-3:
         return None
     u = (target - you) / L
-    s0 = min(L * (1 - LOFT_LANDING) if L > LOFT_FROM else START_M, L)
+    t_of, _, reachable, _, _ = flight(L, cal['max_z'] > LOFTED_Z)
     best = None
     for i in np.flatnonzero(~att):
-        s = s0
+        s = min(START_M, L)
         while s <= L + 1e-6:
+            if not reachable(s):
+                s += STEP_M
+                continue
             q = you + u * s
-            d = float(np.linalg.norm(q - pos[i] - vel[i] * min(s / BALL_SPEED, REACT_OPP)))
+            d = float(np.linalg.norm(q - pos[i] - vel[i] * min(t_of(s), REACT_OPP)))
             best = d if best is None or d < best else best
             s += STEP_M
     return best
@@ -111,13 +130,14 @@ def collect(data_dir, cache_dir):
                 continue
             if sl is not None:
                 tgt = cal['take_pos'] if y else cal['pos'][cal['intended']]
-                rows.append((sl, y, static_gap(cal, tgt)))
+                rows.append((sl, y, static_gap(cal, tgt) or 99.0, cal['max_z'] > LOFTED_Z))
         print(f'  {m.match_id}: {len(rows)} passes so far')
     return rows
 
 
 def fit(rows):
     raw = np.array([r[0] for r in rows])
+    lofted = np.array([r[3] for r in rows])
     y = np.array([r[1] for r in rows])
     gaps = np.array([r[2] for r in rows], float)
     blocked = gaps <= REACH
@@ -154,6 +174,7 @@ def fit(rows):
     auc = float((ranks[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
     print('completion rate by the closest static opponent to the path (n, rate):', by_gap)
     return dict(n=int(len(rows)), completed=int(n1), lost=int(n0), base_rate=round(float(r), 3),
+                lofted_passes=int(lofted.sum()), lofted_completed=int((lofted & (y == 1)).sum()),
                 blocked_passes=int(blocked.sum()), blocked_but_completed=int((blocked & (y == 1)).sum()),
                 completion_by_static_gap=by_gap, fit_blocker_slack_s=bs,
                 logloss_base_rate=round(base, 3), logloss_spearman_sigma045=round(spearman, 3),
