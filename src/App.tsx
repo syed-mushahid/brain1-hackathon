@@ -155,7 +155,6 @@ export default function App() {
   const endTest = () => {
     setUrlTest(null)
     setSession(null)
-    sound.crowdOff()
   }
 
   const onResult = (res: RoundResult) => {
@@ -203,8 +202,7 @@ export default function App() {
         insight: sessionInsight(session.rounds, session.before),
       })
       setSession(null)
-      sound.crowdOff()
-      sound.whistle(3, 0.28) // final whistle
+        sound.whistle(3, 0.28) // final whistle
       return
     }
     const queue =

@@ -134,7 +134,6 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       pending: null as null | { q: [number, number]; at: number; timer: ReturnType<typeof setTimeout> },
     }
     sound.whistle(1, 0.22)
-    sound.crowd(0.25)
     let scene: Scene | null = null
 
     const fit = () => {
@@ -185,7 +184,6 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         sound.kick(lofted ? 1 : 0.9)
         vibrate(lofted ? [15, 40, 15] : 15)
       }
-      sound.react(res.tone === 'great')
       setTimeout(() => vibrate(res.tone === 'great' ? [20, 60, 20] : res.tone === 'bad' ? 70 : 30), 350)
       go('reveal', now)
       lastResult.current = res
@@ -323,12 +321,10 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           g.kicked = true
           sound.kick()
         }
-        sound.crowd(0.3 + 0.75 * (g.f / track.rec)) // the crowd builds towards the decision
         if (g.f >= track.rec) {
           g.f = track.rec
           stopLook()
           sound.kick(0.4) // first touch
-          sound.crowd(1.1)
           vibrate(25)
           go('decide', now)
         }
