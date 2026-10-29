@@ -32,6 +32,8 @@ export interface PassFacts {
   brave: BestPass | null
   /** your pass's chance to arrive */
   myP: number | null
+  /** your pass to a teammate's feet, valued with your flight (a lofted one differs from the ground option) */
+  feet?: PassOption | null
 }
 
 
@@ -132,7 +134,7 @@ export function explain(
   const bestIdx = B.idx
   const pro = facts.pro?.o ?? null
   const proSpace = facts.pro?.intoSpace ?? false
-  const mine = chosenIdx >= 0 ? opt(tr.pids[chosenIdx]) : null
+  const mine = chosenIdx >= 0 ? (facts.feet ?? opt(tr.pids[chosenIdx])) : null
   const bestN = `#${best.num}`
   const who = (i: number) => `${tr.att[i] ? '' : 'red '}#${tr.nums[i]}`
   const spaceOpt = space?.option ?? null
@@ -140,18 +142,25 @@ export function explain(
   const { proIsBest, mineIsBest, mineIsPro } = facts
   // passes as noun phrases
   // "through ball" only when the receiver runs on behind the defensive line, else "pass into space"
-  const kindName = (whose: string, idx: number, end: [number, number], intoSpace: boolean, n: number) =>
-    !intoSpace
-      ? `${whose} pass to #${n}`
+  const kindName = (whose: string, idx: number, end: [number, number], intoSpace: boolean, n: number, lofted = false) => {
+    const lo = lofted ? 'lofted ' : ''
+    return !intoSpace
+      ? `${whose} ${lo}pass to #${n}`
       : passKind(tr, idx, end) === 'through ball'
-        ? `${whose} through ball to #${n}`
-        : `${whose} pass into space for #${n}`
+        ? `${whose} ${lo}through ball to #${n}`
+        : `${whose} ${lo}pass into space for #${n}`
+  }
   const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
-  const myName = space && spaceOpt ? kindName('your', space.takerIdx, space.end, true, spaceOpt.num) : mine ? `your pass to #${mine.num}` : 'your pass'
-  const proName = pro ? kindName('the pro’s', idxOf(tr, pro.pid), proEnd, proSpace, pro.num) : 'the pro’s pass'
-  const bestName = kindName('a', bestIdx, B.end, B.intoSpace, best.num)
+  const myName =
+    space && spaceOpt
+      ? kindName('your', space.takerIdx, space.end, true, spaceOpt.num, space.lofted)
+      : mine
+        ? kindName('your', chosenIdx, posAt(tr, tr.rec, chosenIdx), false, mine.num, !!mine.lofted)
+        : 'your pass'
+  const proName = pro ? kindName('the pro’s', idxOf(tr, pro.pid), proEnd, proSpace, pro.num, !!pro.lofted) : 'the pro’s pass'
+  const bestName = kindName('a', bestIdx, B.end, B.intoSpace, best.num, B.lofted)
   const Bv = facts.brave
-  const braveName = Bv ? kindName('a', Bv.idx, Bv.end, Bv.intoSpace, Bv.o.num) : ''
+  const braveName = Bv ? kindName('a', Bv.idx, Bv.end, Bv.intoSpace, Bv.o.num, Bv.lofted) : ''
   const pTxt = (p: number | null | undefined) => (p === null || p === undefined ? '' : ` (${Math.round(p * 100)}% chance to arrive)`)
   const riskLine = (r: Risk | null, name: string, real: boolean) => {
     // a defender standing in the lane only reduces the chance: a completed pass got past him
@@ -244,7 +253,7 @@ export function explain(
   points.push(...risks, proLine)
   const note =
     `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, with a lost ball counting ${VALUE.k}× (risk aversion, fitted on the pros’ choices), on a 0–100 scale (${Math.round(toPoints(0))} = no change). ` +
-    `P comes from a race model, Spearman-style (2017): the ball travels at ${RACE.ballSpeed} m/s (over ${RACE.loftFrom} m it’s lofted); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
+    `P comes from a race model, Spearman-style (2017): the ball rolls at ${RACE.ballSpeed} m/s (a double-tap lofts it in a ${MODEL.flight.loftAngleDeg}° arc: it can only be reached where it is low, and needs ${MODEL.flight.controlS} s to control); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
     `Goal chances: Expected Possession Value grid by Laurie Shaw (LaurieOnTracking, MIT licence). ` +
     `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes. ` +
     `Taps aren’t precise: a pass into space is also tried ${MODEL.taps.aimR} m around your tap, and a tap within ${MODEL.taps.proSnapM} m of where the pro’s pass was collected gets the real outcome. ` +
@@ -255,9 +264,14 @@ export function explain(
     const level = riskLevel(r.slack)
     return { text: level === 'low' ? 'low' : `${level} (#${tr.nums[r.idx]})`, level } // always an opponent
   }
-  const bestRisk = riskCell(B.intoSpace ? passRisk(tr, B.end, B.t) : passRisk(tr, posAt(tr, tr.rec, bestIdx)))
+  const bestRisk = riskCell(
+    B.intoSpace ? passRisk(tr, B.end, B.t, RACE, B.lofted) : passRisk(tr, posAt(tr, tr.rec, bestIdx), undefined, RACE, B.lofted),
+  )
   // one column per different pass: yours, the pro's, the best (merged when they are the same)
-  const run = (o: PassOption, intoSpace: boolean) => `#${o.num}${intoSpace ? ' (run)' : ''}`
+  const run = (o: PassOption, intoSpace: boolean) => {
+    const tags = [intoSpace ? 'run' : '', o.lofted ? 'lofted' : ''].filter(Boolean)
+    return `#${o.num}${tags.length ? ` (${tags.join(', ')})` : ''}`
+  }
   const cols: CompareCol[] = []
   if (myOpt) {
     const label = `You${mineIsPro ? ' = pro' : ''} ${run(myOpt, !!spaceOpt)}${mineIsBest ? ' · best' : ''}`
@@ -271,7 +285,9 @@ export function explain(
       label: `Brave ${run(Bv.o, Bv.intoSpace)}`,
       tone: 'brave',
       o: Bv.o,
-      risk: riskCell(Bv.intoSpace ? passRisk(tr, Bv.end, Bv.t) : passRisk(tr, posAt(tr, tr.rec, Bv.idx))),
+      risk: riskCell(
+        Bv.intoSpace ? passRisk(tr, Bv.end, Bv.t, RACE, Bv.lofted) : passRisk(tr, posAt(tr, tr.rec, Bv.idx), undefined, RACE, Bv.lofted),
+      ),
     })
 
   // ---- scan

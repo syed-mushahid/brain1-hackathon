@@ -90,6 +90,8 @@ export interface OptionFacts {
 export interface PassOption extends OptionFacts {
   /** expected value of the pass on the 0-100 scale (game/value.ts) */
   value: number
+  /** played as a lofted ball (double tap) rather than along the ground */
+  lofted?: boolean
   /** P(the pass reaches your team), EPV where it is won, raw expected value */
   p?: number
   epv?: number

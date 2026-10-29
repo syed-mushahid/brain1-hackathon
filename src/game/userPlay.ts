@@ -1,7 +1,7 @@
 // "Your pass" replay: what the race model says happens after YOUR pass, as frames the 2D and
 // 3D replays can play like the real ones.
 //   - the ball leaves your feet at the decision moment towards where you aimed, with the model's
-//     flight (space.ts flight(): ground at RACE.ballSpeed, or a 30° lofted arc beyond RACE.loftFrom),
+//     flight (space.ts flight(): ground at RACE.ballSpeed, or a lofted arc when you double-tapped),
 //     stops there, and is taken by the winner at the time the model gave;
 //   - the winner keeps running for his reaction time, then sprints to the spot (the same path the
 //     model raced), and carries on with the ball; the quickest player of the other team chases;
@@ -57,14 +57,15 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   } else if (res.chosenIdx >= 0) {
     taker = res.chosenIdx
     end = posAt(tr, rec, taker)
-    tWin = flight(Math.hypot(end[0] - you[0], end[1] - you[1]), false).arrive
+    const F0 = flight(Math.hypot(end[0] - you[0], end[1] - you[1]), res.lofted)
+    tWin = F0.arrive + F0.control
     outcome = res.headline === 'Offside!' ? 'offside' : 'received'
   } else return null // no pass (time ran out)
 
   const L = Math.hypot(end[0] - you[0], end[1] - you[1])
   const ux = (end[0] - you[0]) / Math.max(L, 1e-6)
   const uy = (end[1] - you[1]) / Math.max(L, 1e-6)
-  const F = flight(L, sp ? sp.lofted : L > RACE.loftFrom) // the flight the race used (lofted beyond race.loftFrom)
+  const F = flight(L, sp ? sp.lofted : res.lofted) // the flight the race used: lofted when you double-tapped
   const tBall = F.arrive
   const out = taker < 0
   const total = (out ? tBall + 1 : Math.max(tWin, tBall) + AFTER_S) * FPS

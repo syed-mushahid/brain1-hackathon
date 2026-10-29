@@ -1,5 +1,6 @@
 import { createContext, Suspense, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
 import { buildTrack, FPS, posAt, sample, type Track } from './track'
+import { MODEL } from './model.config'
 import { loadPlay, withPlay } from '../lib/plays'
 import { buildUserPlay, proStory, storyCaption, type PlayStory } from './userPlay'
 import { Rich } from '../components/Rich'
@@ -122,6 +123,8 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
+      // the decision: a first tap waits taps.doubleTapMs for a second one (double tap = lofted pass)
+      pending: null as null | { q: [number, number]; at: number; timer: ReturnType<typeof setTimeout> },
     }
     sound.whistle(1, 0.22)
     sound.crowd(0.25)
@@ -145,11 +148,13 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       g.look.active = false
       g.look.rec = null
     }
-    const finish = (tap: [number, number] | null, now: number) => {
+    const finish = (tap: [number, number] | null, now: number, lofted = false) => {
+      if (g.pending) clearTimeout(g.pending.timer)
+      g.pending = null
       g.f = track.rec
       stopLook()
       sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
-      const res = evaluate(track, { tap, scans: g.scans })
+      const res = evaluate(track, { tap, scans: g.scans, lofted })
       g.top = res.mentioned
       g.reveal = {
         progress: 0,
@@ -157,7 +162,9 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         chosenIdx: res.chosenIdx,
         proEnd: res.proEnd,
         bestIdx: res.bestIdx,
-        best: { end: res.best.end, run: res.best.run, alone: res.best.alone },
+        best: { end: res.best.end, run: res.best.run, alone: res.best.alone, lofted: res.best.lofted },
+        mineLofted: res.lofted,
+        proLofted: res.proLofted,
         run: res.run,
         space: res.space && {
           end: res.space.end,
@@ -165,11 +172,11 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         },
         threats: res.threats,
         offsideV: res.offsideV,
-        brave: res.brave && { end: res.brave.end, run: res.brave.run },
+        brave: res.brave && { end: res.brave.end, run: res.brave.run, lofted: res.brave.lofted },
       }
       if (tap) {
-        sound.kick(0.9)
-        vibrate(15)
+        sound.kick(lofted ? 1 : 0.9)
+        vibrate(lofted ? [15, 40, 15] : 15)
       }
       sound.react(res.tone === 'great')
       setTimeout(() => vibrate(res.tone === 'great' ? [20, 60, 20] : res.tone === 'bad' ? 70 : 30), 350)
@@ -240,7 +247,21 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       tap(cx, cy) {
         if (g.phase !== 'decide') return
         const rect = canvas.getBoundingClientRect()
-        finish(r.toPitch(cx - rect.left, cy - rect.top), performance.now())
+        const q = r.toPitch(cx - rect.left, cy - rect.top)
+        const now = performance.now()
+        const T = MODEL.taps
+        const first = g.pending
+        if (first && now - first.at <= T.doubleTapMs && Math.hypot(q[0] - first.q[0], q[1] - first.q[1]) <= T.doubleTapM) {
+          finish(first.q, now, true) // double tap: a lofted pass to where you first tapped
+          return
+        }
+        if (first) {
+          finish(first.q, now) // a second tap somewhere else: the first one stands, along the ground
+          return
+        }
+        // a single tap is a ground pass - once it is clear no second tap is coming
+        g.pending = { q, at: now, timer: setTimeout(() => g.pending && finish(g.pending.q, performance.now()), T.doubleTapMs) }
+        vibrate(8)
       },
       ready() {
         if (g.waitFor3D) {
@@ -305,7 +326,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           go('decide', now)
         }
       }
-      if (g.phase === 'decide' && now - g.t0 >= S.decideMs) finish(null, now)
+      if (g.phase === 'decide' && now - g.t0 >= S.decideMs) finish(g.pending?.q ?? null, now) // a pending tap still counts
       if (g.phase !== 'reveal') sample(track, g.f, pos, ball)
       clock.current.f = g.f
       clock.current.rate = g.phase === 'approach' ? S.speed : 0
@@ -391,6 +412,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         headDir: g.look.dir,
         look: g.look.alpha,
         decideLeft: g.phase === 'decide' ? Math.max(0, 1 - (now - g.t0) / S.decideMs) : 1,
+        aim: g.phase === 'decide' ? (g.pending?.q ?? null) : null,
         reveal: g.reveal,
         view: g.view,
         top: g.top,
@@ -422,6 +444,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
     window.addEventListener('keyup', onKey)
     return () => {
       cancelAnimationFrame(raf)
+      if (g.pending) clearTimeout(g.pending.timer)
       ro.disconnect()
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKey)
@@ -485,7 +508,12 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           </div>
         )}
         {replayError && <div className="replay2d-bar error">Replay unavailable – {replayError}</div>}
-        {phase === 'decide' && <div className="overlay banner">PASS! Tap a teammate – or the space</div>}
+        {phase === 'decide' && (
+          <div className="overlay banner">
+            PASS! Tap a teammate – or the space
+            <small>tap = along the ground · double-tap = lofted</small>
+          </div>
+        )}
         {proMode && (phase === 'intro' || phase === 'approach') && (
           <Suspense fallback={<div className="overlay intro"><div className="sub">Loading 3D…</div></div>}>
             <ProScan3D

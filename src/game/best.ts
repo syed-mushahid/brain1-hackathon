@@ -23,14 +23,17 @@ export interface BestPass {
   run: [number, number][] | null
   /** when he collects it (s after the pass) */
   t: number
+  /** played lofted (a double tap) */
+  lofted: boolean
 }
 
 /** search settings (fitted with k, see fitRiskAversion.ts): MODEL.best */
 export const SEARCH = MODEL.best
 
-/** two passes are the same when they go to the same player and end within best.samePassM */
-export const samePass = (a: { idx: number; end: [number, number] }, b: { idx: number; end: [number, number] }) =>
-  a.idx === b.idx && Math.hypot(a.end[0] - b.end[0], a.end[1] - b.end[1]) <= MODEL.best.samePassM
+type PassRef = { idx: number; end: [number, number]; lofted?: boolean }
+/** two passes are the same when they go to the same player, end within best.samePassM and fly the same way */
+export const samePass = (a: PassRef, b: PassRef) =>
+  a.idx === b.idx && !!a.lofted === !!b.lofted && Math.hypot(a.end[0] - b.end[0], a.end[1] - b.end[1]) <= MODEL.best.samePassM
 
 const optCache = new WeakMap<Track, PassOption[]>()
 
@@ -54,11 +57,20 @@ interface Choice {
   best: BestPass
   /** worth more than the best but below best.minP to arrive; null if there is none */
   brave: BestPass | null
+  /** the best pass to each teammate (best.minP+ to arrive), most valuable first (rankedPasses) */
+  ranked: BestPass[]
 }
 const cache = new WeakMap<Track, Choice>()
 
 export const findBestPass = (tr: Track): BestPass => choose(tr).best
 export const findBravePass = (tr: Track): BestPass | null => choose(tr).brave
+/** The value the best option is chosen by: a pass into space has to make up best.spaceGain first. */
+export const rankValue = (c: { o: { value: number }; intoSpace: boolean }) => c.o.value - (c.intoSpace ? MODEL.best.spaceGain : 0)
+/**
+ * The model's ranking of your options: for every teammate his most valuable pass with at least best.minP
+ * to arrive (to feet or into space, either flight), ordered by rankValue - how the best is chosen.
+ */
+export const rankedPasses = (tr: Track): BestPass[] => choose(tr).ranked
 
 function choose(tr: Track): Choice {
   const hit = cache.get(tr)
@@ -66,15 +78,24 @@ function choose(tr: Track): Choice {
   const m = tr.m
   const f = tr.rec
   const pOf = (c: BestPass) => c.o.p ?? 1
-  const { minP, braveGain, spaceGain, runConeDeg, runSpeedMin, ringsM, dirs, samePassM, sameValue } = MODEL.best
+  const { minP, braveGain, spaceGain, runConeDeg, runSpeedMin, ringsM, dirs, samePassM, sameValue, loftMinM } = MODEL.best
+  const you = posAt(tr, f, tr.youIdx)
+  const far = (q: [number, number]) => Math.hypot(q[0] - you[0], q[1] - you[1]) >= loftMinM
 
-  // every candidate pass: to feet, the pro's real through ball, spots around every onside teammate
-  const feet: BestPass[] = scoredOptions(tr)
-    .filter((o) => !o.offside)
-    .map((o) => {
-      const idx = idxOf(tr, o.pid)
-      return { o, idx, intoSpace: false, end: posAt(tr, f, idx), run: null, t: 0 }
-    })
+  // every candidate pass: to feet (along the ground, and lofted when far enough), the pro's real
+  // pass, spots around every onside teammate (both flights)
+  const feet: BestPass[] = []
+  for (const o of scoredOptions(tr)) {
+    if (o.offside) continue
+    const idx = idxOf(tr, o.pid)
+    const end = posAt(tr, f, idx)
+    feet.push({ o, idx, intoSpace: false, end, run: null, t: 0, lofted: false })
+    if (far(end)) {
+      const lo = optionAt(tr, idx, end, undefined, RACE, true)
+      feet.push({ o: lo, idx, intoSpace: false, end, run: null, t: arrivalTime(tr, idx, end, RACE, true), lofted: true })
+    }
+  }
+  feet.sort((a, b) => b.o.value - a.o.value)
   const spaces: BestPass[] = []
   const tk = m.actual.taker
   let proPass: BestPass | null = null
@@ -95,14 +116,17 @@ function choose(tr: Track): Choice {
         end: e,
         run: intoSpace ? tk.run.map(([x, y]) => toPortrait(x, y)) : null,
         t: arrivalTime(tr, i, e, RACE, loft),
+        lofted: loft,
       }
       spaces.push(proPass)
     }
   }
   const lineV = offsideLineV(tr)
   // only spots a tap can actually play: not within reach of a teammate's feet (taps.snapM) or of the
-  // spot where the pro's completed pass was collected (taps.proSnapM: that tap replays the real pass)
+  // spot where the pro's completed pass was collected (taps.proSnapM: that tap, with the pro's flight,
+  // replays the real pass)
   const proSpot = m.actual.outcome === 'received' && tk && idxOf(tr, tk.pid) >= 0 ? toPortrait(m.actual.end.x, m.actual.end.y) : null
+  const proLoft = proLofted(m)
   const mates: [number, number][] = []
   for (let i = 0; i < tr.n; i++) if (tr.att[i] && i !== tr.youIdx) mates.push(posAt(tr, f, i))
   for (let i = 0; i < tr.n; i++) {
@@ -118,18 +142,21 @@ function choose(tr: Track): Choice {
     for (const q of spots) {
       if (q[0] < 1 || q[0] > PITCH_W - 1 || q[1] < 1 || q[1] > PITCH_L - 1) continue
       if (mates.some((m) => Math.hypot(q[0] - m[0], q[1] - m[1]) <= MODEL.taps.snapM)) continue // a tap there is a pass to feet
-      if (proSpot && Math.hypot(q[0] - proSpot[0], q[1] - proSpot[1]) <= MODEL.taps.proSnapM) continue // a tap there plays the pro's pass
+      const nearPro = !!proSpot && Math.hypot(q[0] - proSpot[0], q[1] - proSpot[1]) <= MODEL.taps.proSnapM
       if (runConeDeg !== null && running) {
         const off = Math.acos(((q[0] - p[0]) * vx + (q[1] - p[1]) * vy) / (Math.hypot(q[0] - p[0], q[1] - p[1]) * Math.hypot(vx, vy)))
         if (off > (runConeDeg * Math.PI) / 180) continue // not where his run is taking him
       }
-      const o = simulateSpacePass(tr, q)
-      if (o.offside) continue
-      if (o.option) spaces.push({ o: o.option, idx: o.takerIdx, intoSpace: true, end: o.end, run: o.run, t: o.t })
-      else if (o.team === 'def' && o.rivalIdx >= 0 && tr.att[o.rivalIdx] && offsideBy(tr, o.rivalIdx, lineV) <= 0) {
-        // lost in the race: still a (brave) candidate, valued for your quickest teammate there
-        const t = arrivalTime(tr, o.rivalIdx, q)
-        spaces.push({ o: optionAt(tr, o.rivalIdx, q, t), idx: o.rivalIdx, intoSpace: true, end: q, run: null, t })
+      for (const loft of far(q) ? [false, true] : [false]) {
+        if (nearPro && loft === proLoft) continue // a tap there plays the pro's pass
+        const o = simulateSpacePass(tr, q, RACE, loft)
+        if (o.offside) continue
+        if (o.option) spaces.push({ o: o.option, idx: o.takerIdx, intoSpace: true, end: o.end, run: o.run, t: o.t, lofted: loft })
+        else if (o.team === 'def' && o.rivalIdx >= 0 && tr.att[o.rivalIdx] && offsideBy(tr, o.rivalIdx, lineV) <= 0) {
+          // lost in the race: still a (brave) candidate, valued for your quickest teammate there
+          const t = arrivalTime(tr, o.rivalIdx, q, RACE, loft)
+          spaces.push({ o: optionAt(tr, o.rivalIdx, q, t, RACE, loft), idx: o.rivalIdx, intoSpace: true, end: q, run: null, t, lofted: loft })
+        }
       }
     }
   }
@@ -140,7 +167,7 @@ function choose(tr: Track): Choice {
   let best: BestPass =
     safeFeet[0] ??
     [...feet, ...spaces].sort((x, y) => pOf(y) - pOf(x))[0] ?? // nothing safe: the likeliest pass
-    { o: scoredOptions(tr)[0], idx: idxOf(tr, scoredOptions(tr)[0].pid), intoSpace: false, end: posAt(tr, f, idxOf(tr, scoredOptions(tr)[0].pid)), run: null, t: 0 }
+    { o: scoredOptions(tr)[0], idx: idxOf(tr, scoredOptions(tr)[0].pid), intoSpace: false, end: posAt(tr, f, idxOf(tr, scoredOptions(tr)[0].pid)), run: null, t: 0, lofted: false }
   const feetBest = best.o.value
   for (const c of spaces)
     if (pOf(c) >= minP && c.o.value > best.o.value && c.o.value >= feetBest + spaceGain) best = c
@@ -154,7 +181,11 @@ function choose(tr: Track): Choice {
   for (const c of [...feet, ...spaces])
     if (pOf(c) < minP && c.o.value >= best.o.value + braveGain && (!brave || c.o.value > brave.o.value)) brave = c
 
-  const choice = { best, brave }
+  const top = new Map<number, BestPass>()
+  for (const c of [...feet, ...spaces])
+    if (pOf(c) >= minP && (!top.has(c.idx) || rankValue(c) > rankValue(top.get(c.idx)!))) top.set(c.idx, c)
+  const ranked = [...top.values()].sort((a, b) => rankValue(b) - rankValue(a))
+  const choice = { best, brave, ranked }
   cache.set(tr, choice)
   return choice
 }

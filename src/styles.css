@@ -204,6 +204,15 @@ button {
   animation: pop 0.3s ease both;
 }
 
+.overlay.banner small {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .hud-bottom {
   min-height: 112px;
 }
@@ -977,6 +986,14 @@ button {
 
 .lg.danger::before {
   border-top: 2px dashed #ff6464;
+}
+
+/* a lofted pass is a curved arrow */
+.lg.loft::before {
+  height: 7px;
+  border: 2px solid currentColor;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
 }
 
 .tone-great .headline {

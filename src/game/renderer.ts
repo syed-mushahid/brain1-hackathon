@@ -27,13 +27,16 @@ export interface RevealDraw {
   bestIdx: number
   /** the best pass: its end (a teammate's feet or a spot in space), his run there, and whether it gets
    *  its own arrow (alone = not the same as your pass or the pro's; otherwise only the dashed ring) */
-  best: { end: [number, number]; run: [number, number][] | null; alone: boolean }
+  best: { end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean }
+  /** lofted passes are drawn as curved arrows: yours (double tap), the pro's (measured height) */
+  mineLofted: boolean
+  proLofted: boolean
   /** who took the pro's pass over: his run from the decision frame to the ball */
   run: { pts: [number, number][]; team: Team } | null
   /** your pass into space: where the ball was won and the winner's run (null run = out of play) */
   space: { end: [number, number]; run: { pts: [number, number][]; team: Team } | null } | null
   /** a riskier pass worth more than the best: orange dashed */
-  brave: { end: [number, number]; run: [number, number][] | null } | null
+  brave: { end: [number, number]; run: [number, number][] | null; lofted: boolean } | null
   /** offside line (v) to draw, when a teammate was beyond it as you passed */
   offsideV: number | null
   /** opponents who nearly cut a pass out: from where he stood to where he'd meet the ball */
@@ -51,6 +54,8 @@ export interface Scene {
   /** 0..1 opacity of the look cone (0 = not scanning) */
   look: number
   decideLeft: number // 1 -> 0 during the decision window
+  /** decide: a first tap waiting to see if a second one (lofted) follows */
+  aim?: [number, number] | null
   /** transition progress 0..1: decide = vision shrinking to "you", reveal = darkness lifting */
   blend: number
   reveal: RevealDraw | null
@@ -296,6 +301,14 @@ export class PitchRenderer {
       ctx.beginPath()
       ctx.arc(this.X(yu), this.Y(yv), 4 * s, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * sc.decideLeft)
       ctx.stroke()
+      // where you tapped, while the game waits for a possible second tap (lofted)
+      if (sc.aim) {
+        ctx.strokeStyle = C.mine
+        ctx.lineWidth = 0.4 * s
+        ctx.beginPath()
+        ctx.arc(this.X(sc.aim[0]), this.Y(sc.aim[1]), 1.6 * s, 0, Math.PI * 2)
+        ctx.stroke()
+      }
     } else {
       this.drawBall(bu, bv)
     }
@@ -428,25 +441,25 @@ export class PitchRenderer {
     const [be, bf] = R.best.end
     this.ring(be, bf, C.best, true)
     if (R.best.alone) {
-      this.arrow(yu, yv, be, bf, C.best, p, true)
+      this.arrow(yu, yv, be, bf, C.best, p, true, R.best.lofted)
       if (R.best.run) this.run(R.best.run, C.best, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
     }
     // the brave option (orange dashed): worth more than the best, but below 60 % to arrive
     if (R.brave) {
       const [ru, rv] = R.brave.end
       this.ring(ru, rv, C.brave, true)
-      this.arrow(yu, yv, ru, rv, C.brave, Math.max(0, Math.min(1, p * 1.2 - 0.1)), true)
+      this.arrow(yu, yv, ru, rv, C.brave, Math.max(0, Math.min(1, p * 1.2 - 0.1)), true, R.brave.lofted)
       if (R.brave.run) this.run(R.brave.run, C.brave, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))
     }
     // the pro's actual pass (yellow)
-    this.arrow(yu, yv, R.proEnd[0], R.proEnd[1], C.pro, Math.max(0, Math.min(1, p * 1.4 - 0.2)), false)
+    this.arrow(yu, yv, R.proEnd[0], R.proEnd[1], C.pro, Math.max(0, Math.min(1, p * 1.4 - 0.2)), false, R.proLofted)
     // ...and who took it over: his run to the ball (yellow = teammate, red = interception)
     if (R.run) this.takeover(R.run.pts, R.run.team === 'att' ? C.pro : C.steal, p)
     this.ghostBall(R.proEnd, p)
     // your pass into space (cyan): who won the race to the ball (cyan = teammate, red = interception)
     if (R.space) {
       const [eu, ev] = R.space.end
-      this.arrow(yu, yv, eu, ev, C.mine, Math.max(0, Math.min(1, p * 1.4 - 0.4)), false)
+      this.arrow(yu, yv, eu, ev, C.mine, Math.max(0, Math.min(1, p * 1.4 - 0.4)), false, R.mineLofted)
       const cutOff = !R.space.run || R.space.run.team === 'def' // (aim assist can also move the end a little)
       if (cutOff && R.tap && Math.hypot(R.tap[0] - eu, R.tap[1] - ev) > 2 && p > 0.6) {
         // the rest of the path it never travelled
@@ -466,7 +479,7 @@ export class PitchRenderer {
     if (R.chosenIdx >= 0) {
       const c = at(R.chosenIdx)
       this.ring(c[0], c[1], C.mine, false)
-      this.arrow(yu, yv, c[0], c[1], C.mine, Math.max(0, Math.min(1, p * 1.4 - 0.4)), false)
+      this.arrow(yu, yv, c[0], c[1], C.mine, Math.max(0, Math.min(1, p * 1.4 - 0.4)), false, R.mineLofted)
       if (R.tap) {
         ctx.strokeStyle = 'rgba(34,227,255,0.7)'
         ctx.setLineDash([0.6 * s, 0.6 * s])
@@ -556,13 +569,15 @@ export class PitchRenderer {
     ctx.stroke()
   }
 
-  private arrow(u0: number, v0: number, u1: number, v1: number, color: string, p: number, dashed: boolean): void {
+  /** An arrow from (u0, v0) to (u1, v1), drawn in up to p. A lofted pass curves (a bow to its left). */
+  private arrow(u0: number, v0: number, u1: number, v1: number, color: string, p: number, dashed: boolean, lofted = false): void {
     if (p <= 0) return
     const { ctx, s } = this
     const x0 = this.X(u0)
     const y0 = this.Y(v0)
     const len = Math.hypot(this.X(u1) - x0, this.Y(v1) - y0)
     if (len < 1) return
+    if (lofted) return this.curvedArrow(x0, y0, this.X(u1), this.Y(v1), len, color, p, dashed)
     const ang = Math.atan2(this.Y(v1) - y0, this.X(u1) - x0)
     const start = 2.4 * s // leave the "you" ring clear
     const end = Math.max(start, (len - 1.6 * s) * p)
@@ -579,6 +594,46 @@ export class PitchRenderer {
     ctx.stroke()
     ctx.setLineDash([])
     this.head(xe, ye, ang, 1.5 * s)
+  }
+
+  private curvedArrow(x0: number, y0: number, x1: number, y1: number, len: number, color: string, p: number, dashed: boolean): void {
+    const { ctx, s } = this
+    const bend = Math.min(0.25 * len, 9 * s)
+    const cx = (x0 + x1) / 2 + (-(y1 - y0) / len) * bend
+    const cy = (y0 + y1) / 2 + ((x1 - x0) / len) * bend
+    const N = 40
+    const pts: [number, number][] = []
+    for (let i = 0; i <= N; i++) {
+      const t = i / N
+      pts.push([(1 - t) * (1 - t) * x0 + 2 * (1 - t) * t * cx + t * t * x1, (1 - t) * (1 - t) * y0 + 2 * (1 - t) * t * cy + t * t * y1])
+    }
+    const cum = [0]
+    for (let i = 1; i <= N; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
+    const total = cum[N]
+    const start = 2.4 * s // leave the "you" ring clear
+    const end = Math.max(start, (total - 1.6 * s) * p)
+    const at = (d: number): [number, number, number] => {
+      let i = 1
+      while (i < N && cum[i] < d) i++
+      const w = (d - cum[i - 1]) / Math.max(1e-6, cum[i] - cum[i - 1])
+      const a = pts[i - 1]
+      const b = pts[i]
+      return [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w, Math.atan2(b[1] - a[1], b[0] - a[0])]
+    }
+    ctx.strokeStyle = color
+    ctx.fillStyle = color
+    ctx.lineWidth = 0.5 * s
+    ctx.lineCap = 'round'
+    if (dashed) ctx.setLineDash([1.1 * s, 0.8 * s])
+    ctx.beginPath()
+    const [sx, sy] = at(start)
+    ctx.moveTo(sx, sy)
+    for (let i = 1; i <= N && cum[i] < end; i++) if (cum[i] > start) ctx.lineTo(pts[i][0], pts[i][1])
+    const [ex, ey, ang] = at(end)
+    ctx.lineTo(ex, ey)
+    ctx.stroke()
+    ctx.setLineDash([])
+    this.head(ex, ey, ang, 1.5 * s)
   }
 
   /** A player's run (pitch-metre polyline, smoothed and dotted), drawn in up to p. */

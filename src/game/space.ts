@@ -1,8 +1,8 @@
 // A pass into space (a tap away from every teammate): who gets to the ball first?
 //
 // Simple race model, evaluated with everyone's true position and velocity at reception:
-//   ball    rolls from "you" to the tap point at ballSpeed and stops there; passes longer than
-//           loftFrom are lofted and can only be reached where they are low (flight())
+//   ball    rolls from "you" to the tap point at ballSpeed and stops there; a lofted pass (double tap,
+//           or the pro's measured flight) can only be reached where it is low (flight())
 //   player  keeps running for react seconds, then sprints straight at runSpeed; he can control
 //           the ball within reach metres
 //   an opponent wins the ball at a point on its path if he gets there before the ball does; anyone
@@ -32,7 +32,7 @@ export interface RaceParams {
 // races), so a tap that matches the pro's pass uses the real outcome instead.
 export const RACE: RaceParams = MODEL.race
 /**
- * Lofted passes (taps beyond loftFrom, or a pro pass whose measured height went above flight.loftedZ):
+ * Lofted passes (a double tap, or a pro pass whose measured height went above flight.loftedZ):
  * a launch arc of flight.loftAngleDeg. The ball moves at its ground speed v0·cos(angle) (v0 from the
  * range), can only be reached where it is below flight.reachZ (just after the kick and as it comes
  * down), and the receiver needs flight.controlS extra to control a dropping ball.
@@ -189,7 +189,7 @@ export function passRisk(
   if (L < 1e-3) return null
   const ux = (target[0] - you[0]) / L
   const uy = (target[1] - you[1]) / L
-  const B = flight(L, lofted ?? L > P.loftFrom, P)
+  const B = flight(L, lofted ?? false, P)
   const tEnd = tRecv ?? B.arrive + B.control
   let best: Risk | null = null
   const lanes: { i: number; at: [number, number]; w: number }[] = []
@@ -220,7 +220,7 @@ export function passRisk(
 export function arrivalTime(tr: Track, idx: number, end: [number, number], P: RaceParams = RACE, lofted?: boolean): number {
   const { you, timeTo } = race(tr, P)
   const L = Math.hypot(end[0] - you[0], end[1] - you[1])
-  const B = flight(L, lofted ?? L > P.loftFrom, P)
+  const B = flight(L, lofted ?? false, P)
   return Math.max(B.arrive, timeTo(idx, end)) + B.control
 }
 
@@ -236,7 +236,7 @@ export function optionAt(
 ): PassOption {
   const { you, timeTo } = race(tr, P)
   const dist = Math.hypot(end[0] - you[0], end[1] - you[1])
-  const loft = lofted ?? dist > P.loftFrom
+  const loft = lofted ?? false
   const t = tWin ?? arrivalTime(tr, idx, end, P, loft)
   const defs: [number, number][] = []
   let nearest = Infinity // how much later the quickest opponent reaches the same spot (s)
@@ -262,6 +262,7 @@ export function optionAt(
     progress: r1(progress),
     receiver_space: r1(space),
     direction: passDirection(dist, progress),
+    lofted: loft,
     value: ev.points,
     p: ev.p,
     epv: ev.epvTarget,
@@ -296,7 +297,7 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
   }
   const rests = pathL >= L - 1e-6 // the ball stops at the tap point (it is on the pitch)
   const at = (s: number): [number, number] => [you[0] + ux * s, you[1] + uy * s]
-  const loft = lofted ?? L > P.loftFrom
+  const loft = lofted ?? false
   const B = flight(L, loft, P)
 
   // 1. your teammate who gets there first

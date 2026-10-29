@@ -5,6 +5,7 @@ import { findBestPass, findBravePass, samePass, scoredOptions } from './best'
 import { RACE } from './space'
 import { proLofted } from './facts'
 import { MODEL } from './model.config'
+import { flight } from './space'
 import { arrivalTime, offsideBy, passKind, offsideLineV, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
 import type { PassOption } from '../types'
 import { brainScore, decisionScore, memoryScore, scanScore, spaceMemoryScore, type Scores } from './scoring'
@@ -19,6 +20,8 @@ const cap = (t: string) => t.replace(/^./, (c) => c.toUpperCase())
 export interface RoundInput {
   tap: [number, number] | null // pitch metres (portrait), null = timed out
   scans: ScanRecord[]
+  /** a double tap: the pass is lofted (default: along the ground) */
+  lofted?: boolean
 }
 
 export interface RoundResult {
@@ -28,7 +31,13 @@ export interface RoundResult {
   tapDist: number | null
   bestIdx: number
   /** the best pass (to feet or into space); alone = not the same as yours or the pro's (drawn separately) */
-  best: { idx: number; end: [number, number]; run: [number, number][] | null; alone: boolean }
+  best: { idx: number; end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean }
+  /** your pass was lofted (a double tap) */
+  lofted: boolean
+  /** the pro's real pass was lofted (measured height) */
+  proLofted: boolean
+  /** your pass is the best option (or as good as it) */
+  mineIsBest: boolean
   proEnd: [number, number]
   /** the player who took the pro's pass over and his run to the ball (portrait metres) */
   run: { pts: [number, number][]; team: Team } | null
@@ -37,7 +46,7 @@ export interface RoundResult {
   /** offside line (portrait v) when any teammate was beyond it as you passed, else null */
   offsideV: number | null
   /** a pass worth more than the best but below 60 % to arrive (not shown when it's the one you played) */
-  brave: { idx: number; end: [number, number]; run: [number, number][] | null; value: number; p: number } | null
+  brave: { idx: number; end: [number, number]; run: [number, number][] | null; value: number; p: number; lofted: boolean } | null
   /** your pass to a teammate's feet that the race says is cut out (who took it), else null */
   lost: SpaceOutcome | null
   /** your pass's chance to arrive (expected-value model), null without a pass */
@@ -75,10 +84,24 @@ export function snap(tr: Track, tap: [number, number]): { idx: number; dist: num
 }
 
 export function evaluate(tr: Track, input: RoundInput): RoundResult {
+  const r = evaluateRound(tr, input)
+  // the best option was a lofted ball and you played yours along the ground: say how to loft it
+  if (input.tap && !input.lofted && r.best.lofted && !r.mineIsBest) r.detail += ' Tip: double-tap to play a lofted pass.'
+  return r
+}
+
+function evaluateRound(tr: Track, input: RoundInput): RoundResult {
   const m = tr.m
+  const lofted = !!input.lofted
   // every option valued by expected value (best.ts / value.ts)
   const options = scoredOptions(tr)
-  const valueOf = (pid: string | null) => options.find((o) => o.pid === pid)?.value ?? 0
+  /** a pass to teammate idx's feet with your flight: the ground options, or the same pass lofted */
+  const feetOption = (idx: number): PassOption | null => {
+    const o = options.find((x) => x.pid === tr.pids[idx]) ?? null
+    if (!o || !lofted) return o
+    const lo = optionAt(tr, idx, posAt(tr, tr.rec, idx), undefined, RACE, true)
+    return { ...lo, offside: o.offside, value: o.offside ? 0 : lo.value }
+  }
   // the best pass may be to a teammate's feet or into space (best.ts)
   const best = findBestPass(tr)
   const bestIdx = best.idx
@@ -86,9 +109,15 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const [bu, bv] = posAt(tr, tr.rec, bestIdx)
   const where = whereIs(yu, yv, bu, bv)
   // "through ball" only when he runs on behind the defensive line, else "a pass into space for"
-  const describe = (idx: number, end: [number, number], intoSpace: boolean, n = tr.nums[idx]) =>
-    !intoSpace ? `#${n}` : passKind(tr, idx, end) === 'through ball' ? `A through ball to #${n}` : `A pass into space for #${n}`
-  const bestDesc = describe(bestIdx, best.end, best.intoSpace)
+  const describe = (idx: number, end: [number, number], intoSpace: boolean, loft: boolean, n = tr.nums[idx]) =>
+    !intoSpace
+      ? loft
+        ? `A lofted pass to #${n}`
+        : `#${n}`
+      : passKind(tr, idx, end) === 'through ball'
+        ? `A ${loft ? 'lofted ' : ''}through ball to #${n}`
+        : `A ${loft ? 'lofted ' : ''}pass into space for #${n}`
+  const bestDesc = describe(bestIdx, best.end, best.intoSpace, best.lofted)
   const brave = findBravePass(tr)
   const proPid = m.actual.intended_pid ?? m.actual.target_pid
   const proIdx = idxOf(tr, proPid)
@@ -149,7 +178,14 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   //  - otherwise the ball goes to the tap; if a teammate can't win it there, 8 points taps.aimR around
   //    the tap are tried and the best one a teammate wins is used
   const readSpace = (tap: [number, number]): SpaceOutcome => {
-    if (m.actual.outcome === 'received' && takerIdx >= 0 && run && Math.hypot(tap[0] - proEnd[0], tap[1] - proEnd[1]) <= MODEL.taps.proSnapM) {
+    // the pro's pass = his spot AND his flight (a lofted ball needs a double tap)
+    if (
+      m.actual.outcome === 'received' &&
+      takerIdx >= 0 &&
+      run &&
+      lofted === proLoft &&
+      Math.hypot(tap[0] - proEnd[0], tap[1] - proEnd[1]) <= MODEL.taps.proSnapM
+    ) {
       return {
         end: proEnd,
         takerIdx,
@@ -164,12 +200,12 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       }
     }
     // aim assist only rescues a pass that would be lost: the ball otherwise goes exactly where you tapped
-    const center = simulateSpacePass(tr, tap)
+    const center = simulateSpacePass(tr, tap, RACE, lofted)
     if (center.option) return center
     let best = center
     for (let k = 0; k < 8; k++) {
       const a = (k * Math.PI) / 4
-      const o = simulateSpacePass(tr, [tap[0] + MODEL.taps.aimR * Math.cos(a), tap[1] + MODEL.taps.aimR * Math.sin(a)])
+      const o = simulateSpacePass(tr, [tap[0] + MODEL.taps.aimR * Math.cos(a), tap[1] + MODEL.taps.aimR * Math.sin(a)], RACE, lofted)
       if (o.option && (!best.option || o.option.value > best.option.value)) best = o
     }
     return best
@@ -196,19 +232,22 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const snapped = space ? { idx: -1, dist: Infinity } : near
   // a pass to feet is decided by its own chance to arrive (the same number as its value): below
   // 50 % the opponent who comes closest to cutting it out takes it where he meets the ball
-  const feetOpt = snapped.idx >= 0 ? (options.find((o) => o.pid === tr.pids[snapped.idx]) ?? null) : null
-  const feetRisk = feetOpt && !feetOpt.offside && (feetOpt.p ?? 1) < 0.5 ? passRisk(tr, posAt(tr, tr.rec, snapped.idx)) : null
+  const feetOpt = snapped.idx >= 0 ? feetOption(snapped.idx) : null
+  const feetRisk =
+    feetOpt && !feetOpt.offside && (feetOpt.p ?? 1) < 0.5 ? passRisk(tr, posAt(tr, tr.rec, snapped.idx), undefined, RACE, lofted) : null
   const lost: SpaceOutcome | null = feetRisk
     ? {
         end: feetRisk.at,
         takerIdx: feetRisk.idx,
         team: 'def',
         run: [posAt(tr, tr.rec, feetRisk.idx), feetRisk.at],
-        t: Math.hypot(feetRisk.at[0] - posAt(tr, tr.rec, tr.youIdx)[0], feetRisk.at[1] - posAt(tr, tr.rec, tr.youIdx)[1]) / RACE.ballSpeed,
+        t: flight(Math.hypot(posAt(tr, tr.rec, snapped.idx)[0] - yu, posAt(tr, tr.rec, snapped.idx)[1] - yv), lofted).t(
+          Math.hypot(feetRisk.at[0] - yu, feetRisk.at[1] - yv),
+        ),
         rivalIdx: snapped.idx,
         margin: -(feetRisk.slack + MODEL.passModel.bias),
         option: null,
-        lofted: Math.hypot(posAt(tr, tr.rec, snapped.idx)[0] - yu, posAt(tr, tr.rec, snapped.idx)[1] - yv) > RACE.loftFrom,
+        lofted,
       }
     : null
   const tapDist = snapped.idx >= 0 ? snapped.dist : null
@@ -217,7 +256,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const lostTo = space && space.team === 'def' && space.rivalIdx >= 0 && tr.att[space.rivalIdx] ? space.rivalIdx : -1
   const chosenValue =
     snapped.idx >= 0
-      ? valueOf(tr.pids[snapped.idx])
+      ? (feetOpt?.value ?? 0)
       : space?.option
         ? space.option.value
         : lostTo >= 0
@@ -228,7 +267,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       ? passRisk(tr, space.end, space.t, RACE, space.lofted)
       : null
     : snapped.idx >= 0
-      ? passRisk(tr, posAt(tr, tr.rec, snapped.idx))
+      ? passRisk(tr, posAt(tr, tr.rec, snapped.idx), undefined, RACE, lofted)
       : null
   const threats = [myRisk, proRisk]
     .filter((r): r is Risk => r !== null && riskLevel(r.slack) === 'high')
@@ -236,21 +275,19 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   // each pass as (receiver, end point): two passes are the same when those match (best.ts)
   const proPass =
     m.actual.outcome === 'received' && takerIdx >= 0
-      ? { idx: takerIdx, end: proEnd }
+      ? { idx: takerIdx, end: proEnd, lofted: proLoft }
       : proIdx >= 0
-        ? { idx: proIdx, end: posAt(tr, tr.rec, proIdx) }
+        ? { idx: proIdx, end: posAt(tr, tr.rec, proIdx), lofted: proLoft }
         : null
   const myPass =
     space && space.team === 'att' && !space.offside
-      ? { idx: space.takerIdx, end: space.end }
+      ? { idx: space.takerIdx, end: space.end, lofted: space.lofted }
       : snapped.idx >= 0
-        ? { idx: snapped.idx, end: posAt(tr, tr.rec, snapped.idx) }
+        ? { idx: snapped.idx, end: posAt(tr, tr.rec, snapped.idx), lofted }
         : null
   // your pass's chance to arrive (to feet, into space, or the one that was cut out)
   const myOpt: PassOption | null =
-    snapped.idx >= 0
-      ? (options.find((o) => o.pid === tr.pids[snapped.idx]) ?? null)
-      : (space?.option ?? (lostTo >= 0 ? (space!.aimed ?? null) : null))
+    snapped.idx >= 0 ? feetOpt : (space?.option ?? (lostTo >= 0 ? (space!.aimed ?? null) : null))
   const myP = myOpt?.p ?? null
   // the brave option: worth more than the best, and as risky as it said (below best.minP to arrive)
   const mineIsBrave =
@@ -276,8 +313,12 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     tap: input.tap,
     tapDist,
     bestIdx,
-    best: { idx: bestIdx, end: best.end, run: best.run, alone: !proIsBest && !mineIsBest },
-    brave: brave && !mineIsBrave ? { idx: brave.idx, end: brave.end, run: brave.run, value: brave.o.value, p: brave.o.p ?? 1 } : null,
+    best: { idx: bestIdx, end: best.end, run: best.run, alone: !proIsBest && !mineIsBest, lofted: best.lofted },
+    brave:
+      brave && !mineIsBrave ? { idx: brave.idx, end: brave.end, run: brave.run, value: brave.o.value, p: brave.o.p ?? 1, lofted: brave.lofted } : null,
+    lofted: space ? space.lofted : lofted,
+    proLofted: proLoft,
+    mineIsBest,
     lost,
     p: myP,
     risk: myRisk ? riskLevel(myRisk.slack) : null,
@@ -310,6 +351,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       mineIsPro,
       brave: mineIsBrave ? null : brave,
       myP,
+      feet: feetOpt,
     }),
   }
 
@@ -336,7 +378,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     ran = space.asPro
       ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match${myP !== null && myP < 0.5 ? ` – the model gave it only ${Math.round(myP * 100)}%, but it got through this time` : ''}. `
       : `#${tr.nums[space.takerIdx]} ran onto it ${raceWon(myP, rival)}${pTxt}. `
-  } else if (options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
+  } else if (feetOpt?.offside) return offsideMsg(snapped.idx)
   else if (lost && lost.takerIdx >= 0)
     return { ...base, headline: 'Intercepted!', detail: `${cap(name(lost.takerIdx))} ${raceLost(myP)} your pass to #${tr.nums[snapped.idx]}${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
 

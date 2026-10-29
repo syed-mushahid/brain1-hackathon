@@ -21,7 +21,8 @@ export const MODEL = {
   race: {
     /** m/s, a firm ground pass */
     ballSpeed: 15,
-    /** m: a tap further than this is lofted (and a pro pass without measured height counts as lofted beyond it) */
+    /** m: a pro pass without a measured height (no ball_max_z) counts as lofted beyond this. Your own
+     *  passes are lofted only when you double-tap (taps.doubleTapMs) */
     loftFrom: 30,
     /** s, opponents: they have to read the pass first [LOT uses 0.7] */
     react: 0.5,
@@ -99,7 +100,10 @@ export const MODEL = {
      *  taps.snapM from all teammates (a tap there is a pass to feet), so the first ring is just beyond it */
     ringsM: [6, 9, 12],
     dirs: 8,
-    /** two passes are the same when they reach the same player within this distance (m)... */
+    /** lofted candidates (to feet and into space) are searched from this length (m): a shorter 30° chip never
+     *  gets above flight.reachZ, so it is only slower than the ground pass */
+    loftMinM: 15,
+    /** two passes are the same when they reach the same player within this distance (m), with the same flight... */
     samePassM: 5,
     /** ...and score within this many points of each other */
     sameValue: 5,
@@ -132,6 +136,10 @@ export const MODEL = {
     aimR: 2.5,
     /** memory for a pass into space: where your teammate would be after at most this long (s) */
     memoryLookaheadS: 2.5,
+    /** a second tap within this long (ms) and this close (m) to the first = a lofted pass to the first
+     *  tap; a single tap is a ground pass */
+    doubleTapMs: 300,
+    doubleTapM: 6,
   },
 
   /** Feedback wording by chance to arrive (evaluate.ts / explain.ts). [GAME] */

@@ -15,8 +15,9 @@
 //     pass when the model rated it below 50 % or a defender stood in its lane;
 //   - outcome = chance: a pass is completed exactly when it is >= 50 % to arrive (again except the
 //     pro's real pass);
-//   - lofted passes are lofted where the ball height says so (measured height, else > loftFrom);
-//   - tapping the best option gives "the best option".
+//   - lofted passes are lofted where the ball height says so (the pro's: measured height, else
+//     > loftFrom; yours: a double tap), and a single tap always plays along the ground;
+//   - tapping the best option (double-tapping it when it is lofted) gives "the best option".
 // Exit code 1 when any moment fails. extract_moments.py runs this on every candidate (--json) and
 // only keeps the moments that pass.
 import fs from 'node:fs'
@@ -24,7 +25,7 @@ import path from 'node:path'
 import { validateMoment, validatePlay } from '../src/data/validate'
 import type { MomentData, Play } from '../src/types'
 import { buildTrack, PITCH_L, PITCH_W, posAt, toPortrait, idxOf, type Track } from '../src/game/track'
-import { findBestPass, findBravePass, scoredOptions } from '../src/game/best'
+import { findBestPass, findBravePass, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
 import { difficultyParts } from '../src/game/difficulty'
 import { evaluate, type RoundResult } from '../src/game/evaluate'
 import { flight, optionAt, RACE } from '../src/game/space'
@@ -87,7 +88,6 @@ function standingInLane(tr: Track, end: [number, number], lofted: boolean): numb
 /** The pass you made in a result: completed? where to, lofted? (null when there was no pass / it was offside) */
 function madePass(tr: Track, r: RoundResult): { completed: boolean; end: [number, number]; lofted: boolean; asPro: boolean } | null {
   const you = posAt(tr, tr.rec, tr.youIdx)
-  const far = (e: [number, number]) => Math.hypot(e[0] - you[0], e[1] - you[1]) > RACE.loftFrom
   if (r.space) {
     if (r.space.offside || r.space.takerIdx < 0) return null
     // the flight the model used (a ball cut at the line is lofted by the length of your tap)
@@ -96,7 +96,7 @@ function madePass(tr: Track, r: RoundResult): { completed: boolean; end: [number
   if (r.chosenIdx >= 0) {
     if (r.headline === 'Offside!') return null
     const e = posAt(tr, tr.rec, r.chosenIdx)
-    return { completed: !r.lost, end: e, lofted: far(e), asPro: false }
+    return { completed: !r.lost, end: e, lofted: r.lofted, asPro: false }
   }
   return null
 }
@@ -110,9 +110,11 @@ interface TapReport {
 }
 
 /** Assertions on one tap's result. */
-function checkTap(tr: Track, kind: string, tap: [number, number], problems: string[]): TapReport {
-  const r = evaluate(tr, { tap, scans: [] })
-  const tag = `${kind} tap (${toData(tap).x}, ${toData(tap).y}) "${r.headline}"`
+function checkTap(tr: Track, kind: string, tap: [number, number], problems: string[], lofted = false): TapReport {
+  const r = evaluate(tr, { tap, scans: [], lofted })
+  const tag = `${kind} ${lofted ? 'double-' : ''}tap (${toData(tap).x}, ${toData(tap).y}) "${r.headline}"`
+  // the flight you chose is the flight that was played
+  if ((r.space || r.chosenIdx >= 0) && r.lofted !== lofted) problems.push(`${tag}: played ${r.lofted ? 'lofted' : 'along the ground'}`)
   const texts = [r.headline, r.detail, r.breakdown.why.title, ...r.breakdown.why.points]
   const all = texts.join(' | ')
   const F = MODEL.feedback
@@ -151,11 +153,13 @@ interface MomentReport {
   difficulty?: string
   parts?: { nClose: number; pressure: number; bestP: number; points: number }
   stats?: {
-    best: { pid: string; num: number; intoSpace: boolean; direction: string; p: number; value: number; end: { x: number; y: number } }
+    best: { pid: string; num: number; intoSpace: boolean; lofted: boolean; direction: string; p: number; value: number; end: { x: number; y: number } }
     brave: { pid: string; intoSpace: boolean; p: number; value: number } | null
     proIsBest: boolean
     /** the pro's pass valued as a decision (null: no teammate to value it for) */
     proValue: number | null
+    /** the pro's pass among the model's ranked options (1 = the best); null when it can't be valued */
+    proRank: number | null
     proIntoSpace: boolean
     proLofted: boolean
     outcome: string
@@ -242,10 +246,12 @@ function checkMoment(file: string): MomentReport {
   // ---- taps: the best option, the pro's pass, random ones
   const taps: TapReport[] = []
   const bestTap: [number, number] = best.intoSpace ? best.end : posAt(tr, tr.rec, best.idx)
-  const rb = evaluate(tr, { tap: bestTap, scans: [] })
+  const rb = evaluate(tr, { tap: bestTap, scans: [], lofted: best.lofted })
   if (rb.best.alone || rb.scores.decision < 98)
-    P.push(`tapping the best option (#${best.o.num}${best.intoSpace ? ' into space' : ''}) gives "${rb.headline}", Decision ${rb.scores.decision}`)
-  taps.push(checkTap(tr, 'best', bestTap, P))
+    P.push(
+      `${best.lofted ? 'double-' : ''}tapping the best option (#${best.o.num}${best.intoSpace ? ' into space' : ''}) gives "${rb.headline}", Decision ${rb.scores.decision}`,
+    )
+  taps.push(checkTap(tr, 'best', bestTap, P, best.lofted))
   // no tap at all: "too slow", and the pro's pass in its own column (valued with its measured flight)
   const none = evaluate(tr, { tap: null, scans: [] })
   if (none.headline !== 'Too slow!') P.push(`no tap gives "${none.headline}"`)
@@ -263,7 +269,7 @@ function checkMoment(file: string): MomentReport {
     if (Math.abs(proCol.value - want) > 0.05) P.push(`pro's pass valued ${proCol.value}, with its measured flight it is ${want}`)
   }
   const proTap: [number, number] | null = proIntoSpace ? proEnd : proIdx >= 0 ? posAt(tr, tr.rec, proIdx) : null
-  if (proTap) taps.push(checkTap(tr, 'pro', proTap, P))
+  if (proTap) taps.push(checkTap(tr, 'pro', proTap, P, lofted))
   const rnd = mulberry32(hashString(`check:${m.id}`))
   const yp = posAt(tr, tr.rec, tr.youIdx)
   const mates = tr.pids.map((_, i) => i).filter((i) => tr.att[i] && i !== tr.youIdx)
@@ -282,7 +288,7 @@ function checkMoment(file: string): MomentReport {
       q = [p[0] + r * Math.cos(a), p[1] + r * Math.sin(a)]
     }
     q = [Math.max(0.5, Math.min(PITCH_W - 0.5, q[0])), Math.max(0.5, Math.min(PITCH_L - 0.5, q[1]))]
-    taps.push(checkTap(tr, 'random', q, P))
+    taps.push(checkTap(tr, 'random', q, P, k % 4 === 3)) // every 4th a double tap (lofted)
   }
 
   rep.ok = P.length === 0
@@ -293,6 +299,7 @@ function checkMoment(file: string): MomentReport {
       pid: best.o.pid,
       num: best.o.num,
       intoSpace: best.intoSpace,
+      lofted: best.lofted,
       direction: best.o.direction,
       p: +(best.o.p ?? 1).toFixed(3),
       value: best.o.value,
@@ -301,6 +308,12 @@ function checkMoment(file: string): MomentReport {
     brave: brave ? { pid: brave.o.pid, intoSpace: brave.intoSpace, p: +(brave.o.p ?? 1).toFixed(3), value: brave.o.value } : null,
     proIsBest: rb.proIsBest,
     proValue: proCol?.value ?? null,
+    proRank: (() => {
+      if (!proCol) return null
+      const recv = proIntoSpace ? takerIdx : proIdx
+      const mine = rankValue({ o: proCol, intoSpace: proIntoSpace })
+      return 1 + rankedPasses(tr).filter((c) => c.idx !== recv && rankValue(c) > mine).length
+    })(),
     proIntoSpace,
     proLofted: lofted,
     outcome: m.actual.outcome,
@@ -343,6 +356,9 @@ const summary = {
   proWithin5: good.filter((r) => r.stats!.proValue !== null && r.stats!.proValue >= r.stats!.best.value - 5).length,
   proValued: good.filter((r) => r.stats!.proValue !== null).length,
   bestIntoSpace: good.filter((r) => r.stats!.best.intoSpace).length,
+  bestLofted: good.filter((r) => r.stats!.best.lofted).length,
+  /** the pro's pass is among the model's 3 most valuable different passes */
+  proTop3: good.filter((r) => r.stats!.proRank !== null && r.stats!.proRank <= 3).length,
   proIntoSpace: good.filter((r) => r.stats!.proIntoSpace).length,
   proLofted: good.filter((r) => r.stats!.proLofted).length,
   brave: good.filter((r) => r.stats!.brave).length,
@@ -365,7 +381,8 @@ if (!quiet) {
       `  passed ${good.length}, failed ${bad.length}${manifest.length ? `, manifest problems ${manifest.length}` : ''}`,
       `  difficulty (game model): ${['easy', 'medium', 'hard'].map((d) => `${d} ${summary.difficulty[d] ?? 0}`).join(' / ')}`,
       `  pro = best (same pass): ${share(summary.proIsBest)}; pro within 5 points of the best: ${summary.proWithin5}/${summary.proValued} (${Math.round((100 * summary.proWithin5) / (summary.proValued || 1))}%)`,
-      `  best option into space: ${share(summary.bestIntoSpace)}; pro's pass into space: ${share(summary.proIntoSpace)}`,
+      `  pro's pass in the model's top 3: ${summary.proTop3}/${summary.proValued} (${Math.round((100 * summary.proTop3) / (summary.proValued || 1))}%)`,
+      `  best option into space: ${share(summary.bestIntoSpace)}; lofted: ${share(summary.bestLofted)}; pro's pass into space: ${share(summary.proIntoSpace)}`,
       `  pro's pass lofted: ${share(summary.proLofted)}; brave option shown: ${share(summary.brave)}`,
       `  best direction: ${['forward', 'sideways', 'backward'].map((d) => `${d} ${summary.bestDirection[d] ?? 0}`).join(' / ')}`,
     ].join('\n'),

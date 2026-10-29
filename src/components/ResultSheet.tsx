@@ -139,6 +139,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D }: SheetProps
         {(result.run?.team === 'def' || result.space?.team === 'def') && <span className="lg run def">Steal</span>}
         {result.threats.length > 0 && <span className="lg danger">Danger</span>}
         {result.brave && <span className="lg brave">Brave</span>}
+        {(result.lofted || result.proLofted || result.best.lofted || result.brave?.lofted) && <span className="lg loft">Lofted</span>}
       </div>
       {watchOpen && (
         <div className="watch-menu" aria-label="Watch the play">
