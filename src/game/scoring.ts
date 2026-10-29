@@ -59,8 +59,13 @@ export function brainScore(s: Omit<Scores, 'brain'>): number {
   return Math.round(WEIGHTS.decision * s.decision + WEIGHTS.scan * s.scan + WEIGHTS.memory * s.memory)
 }
 
+/** Colour band of a score, the same as the share squares (score bars, squares). */
+export function scoreTone(score: number): 'green' | 'yellow' | 'red' {
+  const { green, yellow } = MODEL.scoring.squares
+  return score >= green ? 'green' : score >= yellow ? 'yellow' : 'red'
+}
+
 /** Colour square for the share text. */
 export function square(brain: number): string {
-  const { green, yellow } = MODEL.scoring.squares
-  return brain >= green ? '🟩' : brain >= yellow ? '🟨' : '🟥'
+  return { green: '🟩', yellow: '🟨', red: '🟥' }[scoreTone(brain)]
 }

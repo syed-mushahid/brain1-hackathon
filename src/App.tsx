@@ -20,7 +20,10 @@ import {
   type Profile,
   type Ratings,
 } from './lib/profile'
-import { dayKey } from './lib/util'
+import { dayKey, hashString } from './lib/util'
+import { sessionInsight, type SessionRound } from './lib/insights'
+import { MODEL } from './game/model.config'
+import { FEATURES } from './lib/features'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
 import { loadPlay, withPlay } from './lib/plays'
@@ -38,8 +41,25 @@ interface Session {
   settings: RoundSettings
   result: RoundResult | null
   before: Ratings
-  levelBefore: Level
+  /** for the summary's insight line */
+  rounds: SessionRound[]
+  /** level changes during the session, with the 3-round average that triggered each */
+  levelChanges: LevelChange[]
 }
+
+export interface LevelChange {
+  from: Level
+  to: Level
+  avg: number
+}
+
+/** What the summary's insight needs from a round (presentation only). */
+const sessionRound = (res: RoundResult): SessionRound => ({
+  scores: res.scores,
+  risky: res.risk === 'high' || !!res.lost || res.space?.team === 'def',
+  best: res.mineIsBest,
+  look: res.breakdown.scan.timing >= MODEL.scoring.scan.timingFresh ? 'fresh' : res.breakdown.scan.timing > 0 ? 'early' : 'none',
+})
 
 export default function App() {
   const [data, setData] = useState<{ moments: Moment[] } | null>(null)
@@ -76,6 +96,15 @@ export default function App() {
     saveProfile(p)
   }
 
+  // the moment looping on the home screen: one of the moments not in today's challenge, picked by the date
+  const preview = useMemo(() => {
+    if (!data) return null
+    const daily = new Set(dailyMoments(data.moments).map((m) => m.id))
+    const pool = data.moments.filter((m) => !daily.has(m.id))
+    const list = pool.length ? pool : data.moments
+    return list[hashString(`preview:${dayKey()}`) % list.length]
+  }, [data])
+
   const current = session ? session.queue[session.index] : null
   const track = useMemo(() => (current ? buildTrack(current) : null), [current])
 
@@ -99,7 +128,8 @@ export default function App() {
       settings: kind === 'daily' ? LEVEL_SETTINGS.normal : LEVEL_SETTINGS[profile.level],
       result: null,
       before: ratings(profile),
-      levelBefore: profile.level,
+      rounds: [],
+      levelChanges: [],
     })
   }
 
@@ -117,7 +147,8 @@ export default function App() {
       settings: LEVEL_SETTINGS.normal,
       result: null,
       before: ratings(profile),
-      levelBefore: profile.level,
+      rounds: [],
+      levelChanges: [],
     })
   }
 
@@ -129,8 +160,22 @@ export default function App() {
 
   const onResult = (res: RoundResult) => {
     if (!session || !current) return
-    if (session.kind !== 'test') setProfile(recordRound(profile, current.id, res.scores)) // tests don't count
-    setSession({ ...session, result: res, brains: [...session.brains, res.scores.brain] })
+    if (session.kind === 'test') {
+      // tests don't count: nothing goes into the profile
+      setSession({ ...session, result: res, brains: [...session.brains, res.scores.brain], rounds: [...session.rounds, sessionRound(res)] })
+      return
+    }
+    const p = recordRound(profile, current.id, res.scores)
+    setProfile(p)
+    // the rule (profile.ts recordRound) looks at the last 3 rounds: keep that average for the summary
+    const avg = Math.round(p.history.slice(-3).reduce((a, r) => a + r.brain, 0) / Math.min(3, p.history.length))
+    setSession({
+      ...session,
+      result: res,
+      brains: [...session.brains, res.scores.brain],
+      rounds: [...session.rounds, sessionRound(res)],
+      levelChanges: p.level !== profile.level ? [...session.levelChanges, { from: profile.level, to: p.level, avg }] : session.levelChanges,
+    })
   }
 
   const next = () => {
@@ -154,7 +199,8 @@ export default function App() {
         streak: final.streak.count,
         usedFreeze,
         level: final.level,
-        levelBefore: session.levelBefore,
+        levelChanges: session.levelChanges,
+        insight: sessionInsight(session.rounds, session.before),
       })
       setSession(null)
       sound.crowdOff()
@@ -245,12 +291,15 @@ export default function App() {
   return (
     <Home
       profile={profile}
+      preview={preview}
       onDaily={() => start('daily')}
       onTraining={() => start('training')}
       moments={data.moments}
       onTest={startTest}
       onToggleMute={toggleMute}
       onTogglePro={togglePro}
+      // the hook for the tutorial round: until it exists, FEATURES.tutorial keeps the button hidden
+      onHowToPlay={FEATURES.tutorial ? () => start('training') : undefined}
     />
   )
 }

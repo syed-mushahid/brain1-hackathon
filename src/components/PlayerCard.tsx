@@ -1,4 +1,4 @@
-import type { Ratings } from '../lib/profile'
+import { RATING_MIN_ROUNDS, type Ratings } from '../lib/profile'
 import { useCountUp } from './ResultSheet'
 
 function Stat({ label, from, to, delay }: { label: string; from: number; to: number; delay: number }) {
@@ -18,8 +18,32 @@ function Stat({ label, from, to, delay }: { label: string; from: number; to: num
   )
 }
 
-/** FIFA-style card. Pass `before` to animate the change after a session. */
-export function PlayerCard({ after, before, level }: { after: Ratings; before?: Ratings; level?: string }) {
+/** FIFA-style card. Pass `before` to animate the change after a session; `locked` = too few rounds
+ *  for a rating yet (a greyed card instead of numbers). */
+export function PlayerCard({ after, before, level, locked }: { after: Ratings; before?: Ratings; level?: string; locked?: boolean }) {
+  if (locked) return <LockedCard rounds={after.rounds} />
+  return <RatedCard after={after} before={before} level={level} />
+}
+
+function LockedCard({ rounds }: { rounds: number }) {
+  return (
+    <div className="player-card locked">
+      <div className="pc-lock" aria-hidden>
+        <svg viewBox="0 0 24 24">
+          <rect x="5" y="10.5" width="14" height="10" rx="2" fill="currentColor" />
+          <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" strokeWidth="2.2" />
+        </svg>
+      </div>
+      <div className="pc-name">YOU</div>
+      <div className="pc-sub">
+        {rounds}/{RATING_MIN_ROUNDS} rounds
+      </div>
+      <div className="pc-locked-text">Play {RATING_MIN_ROUNDS} rounds to unlock your rating</div>
+    </div>
+  )
+}
+
+function RatedCard({ after, before, level }: { after: Ratings; before?: Ratings; level?: string }) {
   const b = before ?? after
   const ovr = useCountUp(after.overall, 1300, 300, b.overall)
   const tier = after.overall >= 75 ? 'gold' : after.overall >= 60 ? 'silver' : 'bronze'

@@ -1,5 +1,5 @@
 import type { Breakdown, ScanInfo, WhyInfo, MatchInfo } from '../game/explain'
-import { Rich } from './Rich'
+import { Rich, tidy } from './Rich'
 import { RECENT_SCAN_S } from '../game/vision'
 import type { PassOption } from '../types'
 
@@ -75,7 +75,14 @@ function Why({ w }: { w: WhyInfo }) {
           </tr>
         </tbody>
       </table>
-      {w.note && <div className="fine">{w.note}</div>}
+      {w.note && (
+        <details className="how-scoring">
+          <summary>ⓘ How scoring works</summary>
+          <div className="fine">
+            <Rich text={w.note} />
+          </div>
+        </details>
+      )}
     </>
   )
 }
@@ -133,14 +140,14 @@ function Match({ m }: { m: MatchInfo }) {
       <div className="fine center">
         {m.minute} · score at the time · final {m.result}
       </div>
-      <div className="fine center">{m.sub}</div>
+      <div className="fine center">{tidy(m.sub)}</div>
       <ul className="people">
         {m.people.map((p) => (
           <li key={p.role}>
             <span className="role">{p.role}</span>
             <span className={`pnum ${p.team}`}>{p.num}</span>
             <span className="pname">
-              {p.name}
+              {tidy(p.name)}
               {p.pos && <small> {p.pos}</small>}
             </span>
           </li>
