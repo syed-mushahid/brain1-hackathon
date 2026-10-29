@@ -3,9 +3,7 @@
 class Sound {
   private ctx: AudioContext | null = null
   private master: GainNode | null = null
-  private crowdGain: GainNode | null = null
   private noise: AudioBuffer | null = null
-  private crowdLevel = -1
   muted = false
 
   /** Must be called from a user gesture (browsers block audio until then). */
@@ -30,7 +28,7 @@ class Sound {
     if (this.ctx && this.master) this.master.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.05)
   }
 
-  /** Pink-ish noise (Paul Kellet filter), used for the crowd and the kick. */
+  /** Pink-ish noise (Paul Kellet filter), used for the kick and the music's hi-hat. */
   private makeNoise(seconds: number): AudioBuffer {
     const ctx = this.ctx!
     const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate)
@@ -119,53 +117,118 @@ class Sound {
     osc.stop(t + 0.08)
   }
 
-  /** Crowd bed: looping band-passed noise; level 0..1.3 (louder as the decision nears). */
-  crowd(level: number): void {
-    const { ctx, master, noise } = this
-    if (!ctx || !master || !noise) return
-    if (!this.crowdGain) {
-      const src = ctx.createBufferSource()
-      src.buffer = noise
-      src.loop = true
-      const bp = ctx.createBiquadFilter()
-      bp.type = 'bandpass'
-      bp.frequency.value = 850
-      bp.Q.value = 0.5
-      const lp = ctx.createBiquadFilter()
-      lp.type = 'lowpass'
-      lp.frequency.value = 2600
-      this.crowdGain = ctx.createGain()
-      this.crowdGain.gain.value = 0
-      src.connect(bp).connect(lp).connect(this.crowdGain).connect(master)
-      src.start()
-    }
-    if (Math.abs(level - this.crowdLevel) < 0.02) return
-    this.crowdLevel = level
-    this.crowdGain.gain.setTargetAtTime(0.22 * level, ctx.currentTime, 0.25)
+  /** Audio is unlocked (a user gesture happened): music can start without waiting for one. */
+  get ready(): boolean {
+    return !!this.ctx && this.ctx.state === 'running'
   }
 
-  /** Crowd reaction at the reveal: a swell for good passes, an "ooh" dip for bad ones. */
-  react(good: boolean): void {
-    const { ctx } = this
-    if (!ctx || !this.crowdGain) return
-    const g = this.crowdGain.gain
-    const t = ctx.currentTime
-    g.cancelScheduledValues(t)
-    g.setValueAtTime(g.value, t)
-    if (good) {
-      g.linearRampToValueAtTime(0.36, t + 0.25)
-      g.setTargetAtTime(0.05, t + 0.9, 0.6)
+  /**
+   * Home-screen music: a calm synthesised loop (no files) - 96 bpm, Am / F / C / G, soft pads, a plucked
+   * arpeggio, bass, and a light kick and hi-hat. Fades in; musicOff() fades it out. Notes are scheduled a
+   * little ahead on the audio clock (a timer tops the queue up), so the timing doesn't drift.
+   */
+  musicOn(): void {
+    const { ctx, master } = this
+    if (!ctx || !master || this.music) return
+    const gain = ctx.createGain()
+    gain.gain.value = 0.0001
+    gain.connect(master)
+    gain.gain.setTargetAtTime(MUSIC.volume, ctx.currentTime, 0.8)
+    const m = { gain, next: ctx.currentTime + 0.1, step: 0, timer: 0 }
+    m.timer = window.setInterval(() => this.scheduleMusic(m), 25)
+    this.scheduleMusic(m)
+    this.music = m
+  }
+
+  musicOff(): void {
+    const m = this.music
+    if (!m || !this.ctx) return
+    this.music = null
+    window.clearInterval(m.timer)
+    const t = this.ctx.currentTime
+    m.gain.gain.cancelScheduledValues(t)
+    m.gain.gain.setValueAtTime(m.gain.gain.value, t)
+    m.gain.gain.setTargetAtTime(0.0001, t, 0.25)
+    window.setTimeout(() => m.gain.disconnect(), 2000)
+  }
+
+  private music: { gain: GainNode; next: number; step: number; timer: number } | null = null
+
+  private scheduleMusic(m: { gain: GainNode; next: number; step: number }): void {
+    const ctx = this.ctx!
+    const stepS = 60 / MUSIC.bpm / 4 // 16th notes
+    while (m.next < ctx.currentTime + 0.12) {
+      const bar = Math.floor(m.step / 16) % MUSIC.chords.length
+      const s = m.step % 16
+      const chord = MUSIC.chords[bar]
+      const t = m.next
+      if (s === 0) for (const n of chord.pad) this.voice(m.gain, n, t, 16 * stepS, 'triangle', 0.035, 0.35, 900)
+      if (s % 2 === 0) {
+        const n = chord.pad[[0, 1, 2, 3, 2, 1, 2, 3][s / 2]] + 12
+        this.voice(m.gain, n, t, 0.3, 'sine', 0.045, 0.005, 3000)
+      }
+      if (s === 0 || s === 6 || s === 8) this.voice(m.gain, chord.bass, t, s === 6 ? 0.25 : 0.45, 'sine', 0.13, 0.01, 600)
+      if (s === 0 || s === 8) this.drum(m.gain, t, 'kick')
+      if (s === 4 || s === 12 || (s % 2 === 1 && s > 8)) this.drum(m.gain, t, 'hat')
+      m.next += stepS
+      m.step++
+    }
+  }
+
+  /** One note: MIDI number n, held `dur` s, with an attack and a gentle release, through a lowpass. */
+  private voice(out: GainNode, n: number, t: number, dur: number, type: OscillatorType, peak: number, attack: number, cutoff: number): void {
+    const ctx = this.ctx!
+    const osc = ctx.createOscillator()
+    const f = ctx.createBiquadFilter()
+    const g = ctx.createGain()
+    osc.type = type
+    osc.frequency.value = 440 * Math.pow(2, (n - 69) / 12)
+    f.type = 'lowpass'
+    f.frequency.value = cutoff
+    g.gain.setValueAtTime(0.0001, t)
+    g.gain.exponentialRampToValueAtTime(peak, t + attack)
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
+    osc.connect(f).connect(g).connect(out)
+    osc.start(t)
+    osc.stop(t + dur + 0.05)
+  }
+
+  private drum(out: GainNode, t: number, kind: 'kick' | 'hat'): void {
+    const { ctx, noise } = this
+    if (!ctx || !noise) return
+    const g = ctx.createGain()
+    if (kind === 'kick') {
+      const osc = ctx.createOscillator()
+      osc.frequency.setValueAtTime(110, t)
+      osc.frequency.exponentialRampToValueAtTime(45, t + 0.12)
+      this.env(g, t, 0.16, 0.004, 0.18)
+      osc.connect(g).connect(out)
+      osc.start(t)
+      osc.stop(t + 0.25)
     } else {
-      g.linearRampToValueAtTime(0.12, t + 0.15)
-      g.setTargetAtTime(0.04, t + 0.4, 0.5)
+      const src = ctx.createBufferSource()
+      const f = ctx.createBiquadFilter()
+      src.buffer = noise
+      f.type = 'highpass'
+      f.frequency.value = 7000
+      this.env(g, t, 0.05, 0.002, 0.04)
+      src.connect(f).connect(g).connect(out)
+      src.start(t, Math.random())
+      src.stop(t + 0.06)
     }
-    this.crowdLevel = -1
   }
+}
 
-  crowdOff(): void {
-    if (this.ctx && this.crowdGain) this.crowdGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3)
-    this.crowdLevel = 0
-  }
+/** The home-screen loop: chords (pad voicing and bass root, MIDI numbers), tempo and level. */
+const MUSIC = {
+  bpm: 96,
+  volume: 0.55,
+  chords: [
+    { pad: [57, 60, 64, 67], bass: 45 }, // Am7
+    { pad: [53, 57, 60, 64], bass: 41 }, // Fmaj7
+    { pad: [55, 60, 64, 67], bass: 48 }, // C
+    { pad: [55, 59, 62, 69], bass: 43 }, // G(add9)
+  ],
 }
 
 export const sound = new Sound()

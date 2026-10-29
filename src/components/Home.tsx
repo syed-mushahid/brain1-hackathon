@@ -10,6 +10,7 @@ import { PlayerCard } from './PlayerCard'
 import { ShareButton } from './ShareButton'
 import { MomentPreview } from './MomentPreview'
 import { shareText } from '../lib/share'
+import { sound } from '../lib/sound'
 
 interface Props {
   profile: Profile
@@ -31,6 +32,7 @@ const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase())
 
 export function Home({ profile, moments, preview, onDaily, onTraining, onTest, onToggleMute, onTogglePro, onHowToPlay }: Props) {
   const wide = useMedia('(min-width: 1024px)')
+  useHomeMusic(profile.muted)
   // a clock for the "next challenge in" countdown; at midnight the new challenge appears by itself
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -240,4 +242,30 @@ function TestMoment({ moments, onTest }: { moments: Moment[]; onTest: (m: Moment
       </p>
     </details>
   )
+}
+
+/**
+ * Background music while the home screen is open (lib/sound.ts musicOn): browsers only allow sound
+ * after a tap or key press, so it starts with the first one (or straight away when audio is already
+ * unlocked, e.g. back from a session). Off when muted, while the tab is hidden, and when leaving home.
+ */
+function useHomeMusic(muted: boolean) {
+  useEffect(() => {
+    if (muted) return
+    const start = () => {
+      sound.unlock()
+      if (!document.hidden) sound.musicOn()
+    }
+    const onVisible = () => (document.hidden ? sound.musicOff() : sound.ready && sound.musicOn())
+    if (sound.ready) start()
+    window.addEventListener('pointerdown', start, { once: true })
+    window.addEventListener('keydown', start, { once: true })
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('pointerdown', start)
+      window.removeEventListener('keydown', start)
+      document.removeEventListener('visibilitychange', onVisible)
+      sound.musicOff()
+    }
+  }, [muted])
 }
