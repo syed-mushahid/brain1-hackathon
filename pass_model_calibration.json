@@ -41,5 +41,31 @@
  "fit_bias_s": 1.1,
  "fit_sigma_s": 0.9,
  "logloss_fit": 0.275,
- "auc_slack": 0.881
+ "auc_slack": 0.881,
+ "lane_blocked_passes": 121,
+ "lane_blocked_completed": 0.628,
+ "lane_facing_ball": [
+  66,
+  0.621
+ ],
+ "lane_facing_away": [
+  19,
+  0.684
+ ],
+ "lane_logloss_no_rule": 0.2752,
+ "lane_logloss_absolute_stop": 0.3006,
+ "lane_fit_by_facing_alpha": {
+  "0.0": {
+   "q": 0.15,
+   "logloss": 0.2696
+  },
+  "0.5": {
+   "q": 0.15,
+   "logloss": 0.2698
+  },
+  "1.0": {
+   "q": 0.2,
+   "logloss": 0.2703
+  }
+ }
 }

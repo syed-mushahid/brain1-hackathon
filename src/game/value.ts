@@ -23,6 +23,13 @@ export function pSuccess(slack: number): number {
   return 1 / (1 + Math.exp((-Math.PI / (Math.sqrt(3) * sigma)) * (slack + bias)))
 }
 
+/** The race margin (s) that gives chance p: the inverse of pSuccess. */
+export function slackFor(p: number): number {
+  const { sigma, bias } = MODEL.passModel
+  const q = Math.min(1 - 1e-9, Math.max(1e-9, p))
+  return (Math.log(q / (1 - q)) * Math.sqrt(3) * sigma) / Math.PI - bias
+}
+
 const ROWS = EPV_GRID.length
 const COLS = EPV_GRID[0].length
 

@@ -14,7 +14,7 @@ import type { PassOption, Team } from '../types'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
 import { laneOpen, offsideBy, passDirection } from './facts'
 export { offsideBy, offsideLineV } from './facts'
-import { passEV, pSuccess } from './value'
+import { passEV, pSuccess, slackFor } from './value'
 import { MODEL } from './model.config'
 
 /** race margin used when no opponent can get near the pass at all (P(success) ~ 1) */
@@ -151,6 +151,30 @@ export interface Risk {
   slack: number
   /** where he would meet the ball */
   at: [number, number]
+  /** he is standing in the lane (MODEL.passModel.laneBlock): a completed pass "got through this time" */
+  lane?: boolean
+}
+
+/**
+ * How squarely opponent i faces the ball at the reception, 0..1 (passModel.laneBlock): standing = 1;
+ * running, the more he runs away from the ball the lower. Tracking has no body orientation, so his
+ * running direction stands in for it.
+ */
+export function facingBall(tr: Track, i: number): number {
+  const L = MODEL.passModel.laneBlock
+  const f = tr.rec
+  const a = posAt(tr, Math.max(0, f - 2), i)
+  const b = posAt(tr, f, i)
+  const k = FPS / Math.min(2, f || 1)
+  const v = [(b[0] - a[0]) * k, (b[1] - a[1]) * k]
+  const sp = Math.hypot(v[0], v[1])
+  const you = posAt(tr, f, tr.youIdx)
+  const toBall = [you[0] - b[0], you[1] - b[1]]
+  const d = Math.hypot(toBall[0], toBall[1])
+  if (sp < 1e-6 || d < 1e-6) return 1
+  const away = (1 - (v[0] * toBall[0] + v[1] * toBall[1]) / (sp * d)) / 2
+  const running = Math.min(1, Math.max(0, (sp - L.standV) / (L.fullV - L.standV)))
+  return 1 - L.facingAlpha * away * running
 }
 
 export function passRisk(
@@ -168,6 +192,7 @@ export function passRisk(
   const B = flight(L, lofted ?? L > P.loftFrom, P)
   const tEnd = tRecv ?? B.arrive + B.control
   let best: Risk | null = null
+  const lanes: { i: number; at: [number, number]; w: number }[] = []
   for (let i = 0; i < tr.n; i++) {
     if (tr.att[i]) continue
     const STEP_M = stepM()
@@ -177,10 +202,15 @@ export function passRisk(
       const slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(B.t(s), tEnd) : B.t(s))
       if (!best || slack < best.slack) best = { idx: i, slack, at: q }
     }
-    // standing in the lane: the pass doesn't get through him, whatever his reaction time
-    const blocker = MODEL.passModel.blockerSlack
-    const at = blocker === null ? null : laneBlockAt(tr, i, you, [ux, uy], L, B, P)
-    if (at && blocker !== null && (!best || blocker < best.slack)) best = { idx: i, slack: blocker, at }
+    const at = laneBlockAt(tr, i, you, [ux, uy], L, B, P)
+    if (at) lanes.push({ i, at, w: facingBall(tr, i) })
+  }
+  // standing in the lane: each such defender may cut it out (q x how squarely he faces the ball)
+  const { q } = MODEL.passModel.laneBlock
+  if (best && lanes.length && q > 0) {
+    const p = lanes.reduce((acc, l) => acc * (1 - q * l.w), pSuccess(best.slack))
+    const main = lanes.reduce((x, y) => (y.w > x.w ? y : x))
+    best = { idx: main.i, slack: Math.min(best.slack, slackFor(p)), at: main.at, lane: true }
   }
   return best
 }

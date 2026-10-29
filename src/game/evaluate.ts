@@ -102,7 +102,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const ranM = tk && runEnd ? Math.hypot(runEnd[0] - tk.run[0][0], runEnd[1] - tk.run[0][1]) : 0
   const proTo = proIdx >= 0 ? `#${tr.nums[proIdx]}` : null
   const takerNum = takerIdx >= 0 ? tr.nums[takerIdx] : 0
-  const proLine =
+  let proLine =
     m.actual.outcome === 'intercepted' && takerIdx >= 0
       ? proTo
         ? `The pro played ${proTo} – red #${takerNum} intercepted it.`
@@ -136,6 +136,12 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
       : proIntoSpace
         ? passRisk(tr, proEnd, arrivalTime(tr, takerIdx, proEnd, RACE, proLoft), RACE, proLoft)
         : passRisk(tr, posAt(tr, tr.rec, takerIdx), undefined, RACE, proLoft)
+  // the pro's pass arrived although the model rated it risky: say it got through this time
+  const proP = proOpt?.p ?? 1
+  if (m.actual.outcome === 'received' && proRisk?.lane)
+    proLine = `${proLine.replace(/\.$/, '')} – ${tr.att[proRisk.idx] ? '' : 'red '}#${tr.nums[proRisk.idx]} was standing in the lane, but it got through this time.`
+  else if (m.actual.outcome === 'received' && proP < 0.5)
+    proLine = `${proLine.replace(/\.$/, '')} – the model gave it only ${Math.round(proP * 100)}%, but it got through this time.`
 
   // Reading a pass into space. Taps aren't precise, so:
   //  - aimed near where the pro's completed pass was collected = you played the pro's pass, and you
@@ -219,7 +225,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
           : null
   const myRisk: Risk | null = space
     ? space.team === 'att' && !space.offside
-      ? passRisk(tr, space.end, space.t)
+      ? passRisk(tr, space.end, space.t, RACE, space.lofted)
       : null
     : snapped.idx >= 0
       ? passRisk(tr, posAt(tr, tr.rec, snapped.idx))
@@ -328,12 +334,14 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     if (space.team === 'def')
       return { ...base, headline: 'Intercepted!', detail: `${cap(name(space.takerIdx))} ${raceLost(myP)} your pass${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
     ran = space.asPro
-      ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match${myP !== null && myP < 0.5 ? ` – although the model gave it only ${Math.round(myP * 100)}%` : ''}. `
+      ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match${myP !== null && myP < 0.5 ? ` – the model gave it only ${Math.round(myP * 100)}%, but it got through this time` : ''}. `
       : `#${tr.nums[space.takerIdx]} ran onto it ${raceWon(myP, rival)}${pTxt}. `
   } else if (options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
   else if (lost && lost.takerIdx >= 0)
     return { ...base, headline: 'Intercepted!', detail: `${cap(name(lost.takerIdx))} ${raceLost(myP)} your pass to #${tr.nums[snapped.idx]}${pTxt}. ${bestLine}${proFound}`, tone: 'bad' }
 
+  // your pass arrived past a defender standing in the lane (a lane block is a chance, not a stop)
+  if (myRisk?.lane && !space?.asPro) ran += `${cap(name(myRisk.idx))} was standing in the lane – it got through this time. `
   const v = chosenValue ?? 0
   // a high-risk pass (an opponent nearly cut it out) is never praised as better than the pro
   const risky = base.risk === 'high' && myRisk ? `, but ${name(myRisk.idx)} nearly cut it out` : ''

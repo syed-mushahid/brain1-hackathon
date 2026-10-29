@@ -44,6 +44,7 @@ LOFT_ANGLE, LOFT_REACH_Z, LOFT_CONTROL_S, G = math.radians(_M['flight']['loftAng
 LOFTED_Z = _M['flight']['loftedZ']   # a real pass is lofted when its measured ball height went above this
 REACT_OPP, REACT_MATE, RUN_SPEED, REACH = _M['race']['react'], _M['race']['reactMates'], _M['race']['runSpeed'], _M['race']['reach']
 START_M, STEP_M, FPS_RAW = _M['flight']['startM'], _M['flight']['stepM'], 25
+LANE = _M['passModel']['laneBlock']   # facingAlpha, standV, fullV (q is fitted here)
 BLOCKER_SLACKS = [None, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0]   # tried for space.ts BLOCKED_SLACK (None = no rule)
 
 
@@ -120,6 +121,44 @@ def static_gap(cal, target):
     return best
 
 
+def lane_blocker(cal, target):
+    """space.ts laneBlockAt(): the opponent standing (at the pass) within reach of a reachable point of the
+    path, from START_M to L - REACH, closest first. -> column or None"""
+    pos = np.array([np.asarray(p, float) for p in cal['pos']])
+    att = np.array(cal['att'])
+    you = pos[cal['passer']]
+    target = np.asarray(target, float)
+    L = float(np.linalg.norm(target - you))
+    if L < 1e-3:
+        return None
+    u = (target - you) / L
+    _, _, reachable, _, _ = flight(L, cal['max_z'] > LOFTED_Z)
+    best, bd = None, float('inf')
+    s = START_M
+    while s <= L - REACH + 1e-9:
+        if reachable(s):
+            q = you + u * s
+            for i in np.flatnonzero(~att):
+                d = float(np.linalg.norm(q - pos[i]))
+                if d <= REACH and d < bd:
+                    best, bd = int(i), d
+        s += 0.25
+    return best
+
+
+def facing(cal, i, alpha):
+    """space.ts facingBall(): 1 = facing the ball (standing / running at it), down to 1 - alpha running away."""
+    pos = np.asarray(cal['pos'][i], float)
+    vel = (pos - np.asarray(cal['prev'][i], float)) * (FPS_RAW / 5)
+    sp = float(np.linalg.norm(vel))
+    to_ball = np.asarray(cal['pos'][cal['passer']], float) - pos
+    if sp < 1e-6 or np.linalg.norm(to_ball) < 1e-6:
+        return 1.0
+    away = (1 - float(vel @ to_ball) / (sp * float(np.linalg.norm(to_ball)))) / 2
+    running = min(1.0, max(0.0, (sp - LANE['standV']) / (LANE['fullV'] - LANE['standV'])))
+    return 1 - alpha * away * running
+
+
 def collect(data_dir, cache_dir):
     rows, skips = [], Counter()
     for m in em.discover_matches(data_dir):
@@ -142,7 +181,10 @@ def collect(data_dir, cache_dir):
                 continue
             if sl is not None:
                 tgt = cal['take_pos'] if y else cal['pos'][cal['intended']]
-                rows.append((sl, y, static_gap(cal, tgt) or 99.0, cal['max_z'] > LOFTED_Z))
+                b = lane_blocker(cal, tgt)
+                # facing of the lane blocker for alpha 0 / 0.5 / 1 (the game's alpha is in the config)
+                w = {a: facing(cal, b, a) if b is not None else None for a in (0.0, 0.5, 1.0, LANE['facingAlpha'])}
+                rows.append((sl, y, static_gap(cal, tgt) or 99.0, cal['max_z'] > LOFTED_Z, b is not None, w))
         print(f'  {m.match_id}: {len(rows)} passes so far')
     return rows
 
@@ -185,6 +227,30 @@ def fit(rows):
     n1, n0 = y.sum(), len(y) - y.sum()
     auc = float((ranks[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
     print('completion rate by the closest static opponent to the path (n, rate):', by_gap)
+
+    # lane block (space.ts passRisk, model.config.ts passModel.laneBlock): P = P_race * (1 - q * facing)
+    # for a defender standing in the lane; q fitted with the fitted bias / sigma, for several alphas
+    lane = np.array([r[4] for r in rows])
+    p_race = 1 / (1 + np.exp(-math.pi / (math.sqrt(3) * s) * (raw + b)))
+
+    def ll_p(p):
+        p = np.clip(p, 1e-9, 1 - 1e-9)
+        return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+    lane_fit = {}
+    for a in sorted({0.0, 0.5, 1.0, LANE['facingAlpha']}):
+        w = np.array([r[5][a] if r[5][a] is not None else 1.0 for r in rows])
+        q, l = min(((q, ll_p(np.where(lane, p_race * (1 - q * w), p_race))) for q in np.arange(0, 0.91, 0.05)), key=lambda t: t[1])
+        lane_fit[str(a)] = dict(q=round(float(q), 2), logloss=round(l, 4))
+    w1 = np.array([r[5][1.0] if r[5][1.0] is not None else 1.0 for r in rows])
+    fb, fa = lane & (w1 >= 0.75), lane & (w1 < 0.5)
+    lane_res = dict(lane_blocked_passes=int(lane.sum()), lane_blocked_completed=round(float(y[lane].mean()), 3),
+                    lane_facing_ball=[int(fb.sum()), round(float(y[fb].mean()), 3)],
+                    lane_facing_away=[int(fa.sum()), round(float(y[fa].mean()), 3)],
+                    lane_logloss_no_rule=round(ll_p(p_race), 4),
+                    lane_logloss_absolute_stop=round(ll_p(np.where(lane, np.minimum(p_race, 1 / (1 + np.exp(-math.pi / (math.sqrt(3) * s) * (-1.5 + b)))), p_race)), 4),
+                    lane_fit_by_facing_alpha=lane_fit)
+    print('lane block:', lane_res)
     return dict(n=int(len(rows)), completed=int(n1), lost=int(n0), base_rate=round(float(r), 3),
                 lofted_passes=int(lofted.sum()), lofted_completed=int((lofted & (y == 1)).sum()),
                 blocked_passes=int(blocked.sum()), blocked_but_completed=int((blocked & (y == 1)).sum()),
@@ -192,7 +258,7 @@ def fit(rows):
                 logloss_base_rate=round(base, 3), logloss_spearman_sigma045=round(spearman, 3),
                 spearman_sigma045_best_bias=round(float(b45[0]), 2), logloss_spearman_best_bias=round(b45[1], 3),
                 fit_bias_s=round(float(b), 2), fit_sigma_s=round(float(s), 2), logloss_fit=round(ll, 3),
-                auc_slack=round(auc, 3))
+                auc_slack=round(auc, 3), **lane_res)
 
 
 def main():

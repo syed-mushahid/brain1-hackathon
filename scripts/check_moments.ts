@@ -10,8 +10,9 @@
 //   - "dead heat" / "split second" never appear, and "close race" only between 40 and 60 %;
 //   - "Better than the pro!" is never said for a high-risk pass;
 //   - the memory line names the teammate who actually received your pass;
-//   - no pass arrives through a defender standing in the lane (the pro's real pass excepted: that
-//     is what really happened);
+//   - a pass that arrives past a defender standing in the lane (a lane block is a chance, not a
+//     stop: passModel.laneBlock) says "it got through this time", and so does the pro's completed
+//     pass when the model rated it below 50 % or a defender stood in its lane;
 //   - outcome = chance: a pass is completed exactly when it is >= 50 % to arrive (again except the
 //     pro's real pass);
 //   - lofted passes are lofted where the ball height says so (measured height, else > loftFrom);
@@ -132,10 +133,11 @@ function checkTap(tr: Track, kind: string, tap: [number, number], problems: stri
     // outcome = chance to arrive
     if (r.p !== null && made.completed !== r.p >= 0.5)
       problems.push(`${tag}: ${made.completed ? 'completed' : 'lost'} at ${pct(r.p)} to arrive`)
-    // no pass through a defender standing in the lane
+    // past a defender standing in the lane: the text says it got through this time
     if (made.completed) {
       const d = standingInLane(tr, made.end, made.lofted)
-      if (d >= 0) problems.push(`${tag}: arrives through red #${tr.nums[d]} standing in the lane`)
+      if (d >= 0 && !/got through this time/.test(all))
+        problems.push(`${tag}: arrives past red #${tr.nums[d]} standing in the lane without "it got through this time"`)
     }
   }
   return { kind, tap, headline: r.headline, p: r.p, risk: r.risk }
@@ -248,6 +250,13 @@ function checkMoment(file: string): MomentReport {
   const none = evaluate(tr, { tap: null, scans: [] })
   if (none.headline !== 'Too slow!') P.push(`no tap gives "${none.headline}"`)
   const proCol = none.breakdown.why.cols.find((c) => c.tone === 'pro')?.o ?? null
+  if (m.actual.outcome === 'received' && proCol) {
+    const proTarget: [number, number] = proIntoSpace ? proEnd : posAt(tr, tr.rec, takerIdx >= 0 ? takerIdx : proIdx)
+    const laneD = standingInLane(tr, proTarget, lofted)
+    const texts = [none.detail, ...none.breakdown.why.points].join(' | ')
+    if (((proCol.p ?? 1) < 0.5 || laneD >= 0) && !/got through this time/.test(texts))
+      P.push(`pro's completed pass (${pct(proCol.p)}${laneD >= 0 ? `, red #${tr.nums[laneD]} in the lane` : ''}) without "it got through this time"`)
+  }
   if (proCol && (proIntoSpace || lofted)) {
     const i = proIntoSpace ? takerIdx : proIdx
     const want = optionAt(tr, i, proIntoSpace ? proEnd : posAt(tr, tr.rec, i), undefined, RACE, lofted).value

@@ -154,6 +154,8 @@ export function explain(
   const braveName = Bv ? kindName('a', Bv.idx, Bv.end, Bv.intoSpace, Bv.o.num) : ''
   const pTxt = (p: number | null | undefined) => (p === null || p === undefined ? '' : ` (${Math.round(p * 100)}% chance to arrive)`)
   const riskLine = (r: Risk | null, name: string, real: boolean) => {
+    // a defender standing in the lane only reduces the chance: a completed pass got past him
+    if (r?.lane) return `${cap(who(r.idx))} was standing in the lane of ${name} – it got through this time`
     const level = r ? riskLevel(r.slack) : 'low'
     if (!r || level === 'low') return null
     return level === 'high'

@@ -59,15 +59,18 @@ export const MODEL = {
     /** margin used when no opponent can get near the pass at all (P ~ 1) */
     noOpponentS: 3,
     /**
-     * A defender standing in the lane (at the reception within race.reach of the ball's path, where
-     * the ball can be reached and short of the receiver) gets at most this margin (s), whatever his
-     * reaction time, so the pass doesn't arrive through him: -1.5 s -> P = 31 %. [GAME] rule: on the
-     * 991 real passes every blocker margin cost a little log-loss ([CAL]: none 0.299, -1 s 0.307,
-     * -3 s 0.331) - 73 % of real passes with an opponent within 0.5 m of the path still arrived,
-     * because real defenders often face the wrong way - but the game must never show a pass rolling
-     * through a defender. Must stay below -passModel.bias (P < 50 %). null = rule off.
+     * A defender standing in the lane (at the reception within race.reach of the ball's path, where the
+     * ball can be reached and short of the receiver) cuts the pass out with probability q * facing:
+     *   P = P_race * (1 - q * facing),   facing = 1 - facingAlpha * away * running
+     *   away    = (1 - cos) / 2 of his running direction vs the direction to the ball (1 = straight away)
+     *   running = 0 below standV m/s (standing: assumed to watch the ball) .. 1 from fullV m/s
+     * Probabilistic, not a stop: of the 991 real passes [CAL], 121 had a defender standing in the lane
+     * and 63 % of them still arrived. Log-loss (game's bias / sigma): no lane rule 0.2752, the old
+     * absolute stop (-1.5 s) 0.3006, this rule 0.2703 (q fitted for facingAlpha 1). Facing measured
+     * from running direction is weak evidence (blockers facing the ball 62 %, away 68 % completed;
+     * without facing the best fit is q 0.15, 0.2696); kept so defenders facing away block less.
      */
-    blockerSlack: -1.5 as number | null,
+    laneBlock: { q: 0.2, facingAlpha: 1, standV: 1, fullV: 3 },
   },
 
   /** Expected value of a pass (value.ts):
