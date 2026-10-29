@@ -20,7 +20,8 @@ import {
   type Profile,
   type Ratings,
 } from './lib/profile'
-import { dayKey } from './lib/util'
+import { dayKey, hashString } from './lib/util'
+import { FEATURES } from './lib/features'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
 import { loadPlay, withPlay } from './lib/plays'
@@ -64,6 +65,15 @@ export default function App() {
     setProfileState(p)
     saveProfile(p)
   }
+
+  // the moment looping on the home screen: one of the moments not in today's challenge, picked by the date
+  const preview = useMemo(() => {
+    if (!data) return null
+    const daily = new Set(dailyMoments(data.moments).map((m) => m.id))
+    const pool = data.moments.filter((m) => !daily.has(m.id))
+    const list = pool.length ? pool : data.moments
+    return list[hashString(`preview:${dayKey()}`) % list.length]
+  }, [data])
 
   const current = session ? session.queue[session.index] : null
   const track = useMemo(() => (current ? buildTrack(current) : null), [current])
@@ -199,10 +209,13 @@ export default function App() {
   return (
     <Home
       profile={profile}
+      preview={preview}
       onDaily={() => start('daily')}
       onTraining={() => start('training')}
       onToggleMute={toggleMute}
       onTogglePro={togglePro}
+      // the hook for the tutorial round: until it exists, FEATURES.tutorial keeps the button hidden
+      onHowToPlay={FEATURES.tutorial ? () => start('training') : undefined}
     />
   )
 }

@@ -48,6 +48,9 @@ export interface Ratings {
   rounds: number
 }
 
+/** the player card shows numbers from this many rounds on (before that: "play 5 rounds to unlock") */
+export const RATING_MIN_ROUNDS = 5
+
 /** Rolling average of the last 20 rounds (50 = starting value). */
 export function ratings(p: Profile): Ratings {
   const last = p.history.slice(-20)

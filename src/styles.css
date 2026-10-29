@@ -4,7 +4,7 @@
   --panel: #151f38;
   --line: rgba(255, 255, 255, 0.1);
   --text: #f2f5ff;
-  --muted: #94a0bf;
+  --muted: #aab4d0; /* 9:1 on --bg, 7:1 on the cards (WCAG AA for small text) */
   --accent: #ffd400;
   --cyan: #22e3ff;
   --green: #2ee6a0;
@@ -1042,12 +1042,62 @@ button {
   border-radius: 999px;
   background: var(--panel);
   font-size: 0.85rem;
-  opacity: 0.6;
 }
 
-.streak.on,
+/* "freeze used": dimmed through its colour, not opacity, so the text keeps its contrast */
+.freeze {
+  position: relative;
+  color: var(--muted);
+}
+
 .freeze.on {
+  color: var(--text);
+}
+
+.freeze .tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 10;
+  width: max-content;
+  max-width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #24314f;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.3;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+.freeze .tip::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  margin-left: -5px;
+  border: 5px solid transparent;
+  border-top: 0;
+  border-bottom-color: #24314f;
+}
+
+.freeze.tip-open .tip,
+.freeze:focus-visible .tip {
   opacity: 1;
+  visibility: visible;
+}
+
+@media (hover: hover) {
+  .freeze:hover .tip {
+    opacity: 1;
+    visibility: visible;
+  }
 }
 
 .streak b {
@@ -1056,7 +1106,7 @@ button {
 
 .streak-sub {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .icon-btn {
@@ -1130,16 +1180,45 @@ button {
   margin-top: 4px;
 }
 
-.daily-score {
-  font-size: 2rem;
-  font-weight: 900;
-  color: var(--green);
+.daily-meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.daily-done {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .done-line {
+  flex: 1;
   color: var(--green);
   font-weight: 800;
-  margin-bottom: 10px;
+}
+
+.done-line small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.countdown {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.share.compact .share-btn {
+  width: auto;
+  padding: 10px 18px;
+  font-size: 0.95rem;
+}
+
+.share.compact {
+  align-items: flex-end;
 }
 
 .how {
@@ -1158,10 +1237,137 @@ button {
   margin-top: auto;
   padding-top: 8px;
   text-align: center;
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   color: var(--muted);
-  opacity: 0.8;
 }
+
+.how-btn {
+  padding-block: 12px;
+  font-size: 0.95rem;
+}
+
+.cta-sub {
+  display: block;
+  font-size: 0.78em;
+  font-weight: 700;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(34, 227, 255, 0.16);
+  color: var(--cyan);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+/* one line from the saved history, under the player card */
+.insight {
+  margin: -4px auto 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.insight.up {
+  color: var(--green);
+}
+
+.insight.down {
+  color: #ff8a6a;
+}
+
+/* the looping moment: a band above the card (phones), the whole pitch on the left (desktop) */
+.preview {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--bg-2);
+}
+
+.preview canvas {
+  display: block;
+  margin: 0 auto;
+}
+
+.preview-band {
+  height: 170px;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+}
+
+.preview-whole {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: none;
+}
+
+.preview-whole canvas {
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.preview figcaption {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(10, 16, 32, 0.78);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.preview-whole figcaption {
+  bottom: 22px;
+  font-size: 0.8rem;
+}
+
+/* desktop: two columns */
+.home-wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 460px);
+  gap: 40px;
+  max-width: 1200px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.home-stage {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  padding: 24px 0;
+}
+
+.home-wide .screen {
+  max-width: none;
+  width: 100%;
+  min-height: 100dvh;
+  padding-inline: 0;
+  gap: 12px;
+}
+
+.home-wide .logo-ring {
+  display: none; /* the moment on the left is the picture */
+}
+
 
 /* ---------------------------------------------------------------- player card */
 .player-card {
@@ -1169,6 +1375,7 @@ button {
   --c2: #7a4a22;
   --ink: #1d1206;
   position: relative;
+  overflow: hidden; /* the shine's transform must not widen the page (sideways scroll on phones) */
   width: 200px;
   margin: 0 auto;
   padding: 16px 16px 18px;
@@ -1199,6 +1406,42 @@ button {
   --c1: #fbe38a;
   --c2: #c99a1f;
   --ink: #2a1c00;
+}
+
+/* fewer than 5 rounds: no numbers yet */
+.player-card.locked {
+  --c1: #3a4560;
+  --c2: #252e45;
+  --ink: #c9d1e6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 230px;
+  padding-top: 28px;
+  filter: none;
+}
+
+.player-card.locked::after {
+  display: none;
+}
+
+.pc-lock {
+  width: 40px;
+  height: 40px;
+  opacity: 0.8;
+}
+
+.player-card.locked .pc-name {
+  align-self: stretch;
+}
+
+.pc-locked-text {
+  max-width: 150px;
+  margin-top: 6px;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 800;
+  line-height: 1.3;
 }
 
 .pc-head {
