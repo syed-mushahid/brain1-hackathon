@@ -1,4 +1,5 @@
-import { RECENT_SCAN_S, type ScanRecord } from './vision'
+import type { ScanRecord } from './vision'
+import { MODEL } from './model.config'
 
 export interface Scores {
   decision: number
@@ -8,7 +9,8 @@ export interface Scores {
   brain: number
 }
 
-export const WEIGHTS = { decision: 0.5, scan: 0.25, memory: 0.25 }
+/** weights, thresholds: MODEL.scoring */
+export const WEIGHTS = MODEL.scoring.weights
 
 /** Decision = value of the chosen option / value of the best option. Miss = 0. */
 export function decisionScore(chosenValue: number | null, bestValue: number): number {
@@ -18,11 +20,11 @@ export function decisionScore(chosenValue: number | null, bestValue: number): nu
 }
 
 /**
- * Scan = timing (max 60) + target (max 40).
- *   timing: 60 if you were looking around in the last 1.5 s before reception,
- *           15 if you only looked earlier
- *   target: 40 if the best option was inside your look cone in the last 1.5 s,
- *           20 if you only saw it earlier
+ * Scan = timing + target (MODEL.scoring.scan; 60 + 40 by default).
+ *   timing: timingFresh if you were looking around in the last recentS before reception,
+ *           timingEarly if you only looked earlier
+ *   target: targetFresh if the best option was inside your look cone in the last recentS,
+ *           targetEarly if you only saw it earlier
  */
 export function scanScore(scans: ScanRecord[]): number {
   const { timing, target } = scanParts(scans)
@@ -30,27 +32,26 @@ export function scanScore(scans: ScanRecord[]): number {
 }
 
 export function scanParts(scans: ScanRecord[]): { timing: number; target: number } {
-  const timing = scans.some((s) => s.endBefore <= RECENT_SCAN_S) ? 60 : scans.length > 0 ? 15 : 0
+  const { recentS, scan } = MODEL.scoring
+  const timing = scans.some((s) => s.endBefore <= recentS) ? scan.timingFresh : scans.length > 0 ? scan.timingEarly : 0
   const seen = scans.map((s) => s.sawBestBefore).filter((b): b is number => b !== null)
-  const target = seen.some((b) => b <= RECENT_SCAN_S) ? 40 : seen.length > 0 ? 20 : 0
+  const target = seen.some((b) => b <= recentS) ? scan.targetFresh : seen.length > 0 ? scan.targetEarly : 0
   return { timing, target }
 }
 
-/** Memory = how close the tap was to the chosen teammate's true position: 1.5 m = perfect, 0 at 6 m
- *  (a pass to feet needs a tap within 5 m, so it always scores something). */
+const ramp = (d: number, { perfectM, zeroM }: { perfectM: number; zeroM: number }) =>
+  Math.round(100 * Math.max(0, Math.min(1, (zeroM - d) / (zeroM - perfectM))))
+
+/** Memory = how close the tap was to the chosen teammate's true position: scoring.memory.perfectM =
+ *  perfect, 0 at zeroM (a pass to feet needs a tap within taps.snapM, so it always scores something). */
 export function memoryScore(tapDist: number | null): number {
-  if (tapDist === null) return 0
-  const PERFECT_M = 1.5
-  const ZERO_M = 6
-  return Math.round(100 * Math.max(0, Math.min(1, (ZERO_M - tapDist) / (ZERO_M - PERFECT_M))))
+  return tapDist === null ? 0 : ramp(tapDist, MODEL.scoring.memory)
 }
 
 /** Memory for a pass into space: tap vs where your teammate would be when the ball arrived
- *  (space.ts spaceMemory). 3 m = perfect, 0 at 12 m: a through ball is meant to lead the runner. */
+ *  (space.ts spaceMemory), scoring.spaceMemory: a through ball is meant to lead the runner. */
 export function spaceMemoryScore(dist: number): number {
-  const PERFECT_M = 3
-  const ZERO_M = 12
-  return Math.round(100 * Math.max(0, Math.min(1, (ZERO_M - dist) / (ZERO_M - PERFECT_M))))
+  return ramp(dist, MODEL.scoring.spaceMemory)
 }
 
 export function brainScore(s: Omit<Scores, 'brain'>): number {
@@ -60,5 +61,6 @@ export function brainScore(s: Omit<Scores, 'brain'>): number {
 
 /** Colour square for the share text. */
 export function square(brain: number): string {
-  return brain >= 75 ? '🟩' : brain >= 50 ? '🟨' : '🟥'
+  const { green, yellow } = MODEL.scoring.squares
+  return brain >= green ? '🟩' : brain >= yellow ? '🟨' : '🟥'
 }

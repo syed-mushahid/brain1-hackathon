@@ -1,24 +1,20 @@
 import type { Team } from '../types'
 import { idxOf, posAt, toPortrait, type Track } from './track'
 import { explain, type Breakdown } from './explain'
-import { findBestPass, findBravePass, SAME_VALUE, samePass, scoredOptions } from './best'
+import { findBestPass, findBravePass, samePass, scoredOptions } from './best'
 import { RACE } from './space'
 import { proLofted } from './facts'
-import { SLACK_BIAS } from './value'
-import { arrivalTime, offsideBy, passKind, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
+import { MODEL } from './model.config'
+import { arrivalTime, offsideBy, passKind, offsideLineV, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
 import type { PassOption } from '../types'
 import { brainScore, decisionScore, memoryScore, scanScore, spaceMemoryScore, type Scores } from './scoring'
 import { RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
 const cap = (t: string) => t.replace(/^./, (c) => c.toUpperCase())
 
-/** a pass into space aimed this close to where the pro's completed pass was collected = the pro's pass */
-const PRO_SNAP_M = 5
-/** aim assist: a pass into space is also tried this far around the tap (fingers aren't precise) */
-const AIM_R = 2.5
-
-/** a tap this close to a teammate is a pass to his feet; anywhere else the ball goes where you tapped */
-export const SNAP_M = 5
+// Tap reading (MODEL.taps): snapM = a tap this close to a teammate is a pass to his feet, anywhere else
+// the ball goes where you tapped; proSnapM = a pass into space aimed this close to where the pro's
+// completed pass was collected is the pro's pass; aimR = aim assist radius (fingers aren't precise).
 
 export interface RoundInput {
   tap: [number, number] | null // pitch metres (portrait), null = timed out
@@ -71,7 +67,7 @@ export function snap(tr: Track, tap: [number, number]): { idx: number; dist: num
       idx = i
     }
   }
-  return dist <= SNAP_M ? { idx, dist } : { idx: -1, dist }
+  return dist <= MODEL.taps.snapM ? { idx, dist } : { idx: -1, dist }
 }
 
 export function evaluate(tr: Track, input: RoundInput): RoundResult {
@@ -119,7 +115,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   // receiver had to run onto it (then it is scored at the spot he collected it, not where he stood).
   const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
   const proIntoSpace =
-    m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= 5
+    m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= MODEL.best.samePassM
   // valued with its measured flight: a lofted pro pass (ball above 1.8 m) as a lofted ball
   const proLoft = proLofted(m)
   const proOpt: PassOption | null = proIntoSpace
@@ -140,10 +136,10 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   // Reading a pass into space. Taps aren't precise, so:
   //  - aimed near where the pro's completed pass was collected = you played the pro's pass, and you
   //    get what really happened in the match (receiver, run, value), not the model
-  //  - otherwise the ball goes to the tap; if a teammate can't win it there, 8 points AIM_R around
+  //  - otherwise the ball goes to the tap; if a teammate can't win it there, 8 points taps.aimR around
   //    the tap are tried and the best one a teammate wins is used
   const readSpace = (tap: [number, number]): SpaceOutcome => {
-    if (m.actual.outcome === 'received' && takerIdx >= 0 && run && Math.hypot(tap[0] - proEnd[0], tap[1] - proEnd[1]) <= PRO_SNAP_M) {
+    if (m.actual.outcome === 'received' && takerIdx >= 0 && run && Math.hypot(tap[0] - proEnd[0], tap[1] - proEnd[1]) <= MODEL.taps.proSnapM) {
       return {
         end: proEnd,
         takerIdx,
@@ -162,7 +158,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     let best = center
     for (let k = 0; k < 8; k++) {
       const a = (k * Math.PI) / 4
-      const o = simulateSpacePass(tr, [tap[0] + AIM_R * Math.cos(a), tap[1] + AIM_R * Math.sin(a)])
+      const o = simulateSpacePass(tr, [tap[0] + MODEL.taps.aimR * Math.cos(a), tap[1] + MODEL.taps.aimR * Math.sin(a)])
       if (o.option && (!best.option || o.option.value > best.option.value)) best = o
     }
     return best
@@ -199,7 +195,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
         run: [posAt(tr, tr.rec, feetRisk.idx), feetRisk.at],
         t: Math.hypot(feetRisk.at[0] - posAt(tr, tr.rec, tr.youIdx)[0], feetRisk.at[1] - posAt(tr, tr.rec, tr.youIdx)[1]) / RACE.ballSpeed,
         rivalIdx: snapped.idx,
-        margin: -(feetRisk.slack + SLACK_BIAS),
+        margin: -(feetRisk.slack + MODEL.passModel.bias),
         option: null,
       }
     : null
@@ -246,9 +242,9 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const myP = myOpt?.p ?? null
   const mineIsBrave = !!myPass && !!brave && samePass(myPass, brave) && (chosenValue ?? 0) >= best.o.value + 0.5
   // the same pass as the best = same receiver and spot, and (nearly) the same value
-  const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - SAME_VALUE
+  const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - MODEL.best.sameValue
   const mineIsBest =
-    !!myPass && ((samePass(myPass, best) && (chosenValue ?? 0) >= best.o.value - SAME_VALUE) || (chosenValue ?? 0) >= best.o.value - 0.5)
+    !!myPass && ((samePass(myPass, best) && (chosenValue ?? 0) >= best.o.value - MODEL.best.sameValue) || (chosenValue ?? 0) >= best.o.value - 0.5)
   const mineIsPro = !!myPass && !!proPass && (samePass(myPass, proPass) || !!space?.asPro)
 
   const spaceMem = space && input.tap ? spaceMemory(tr, input.tap) : null
@@ -283,7 +279,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     proEnd,
     run,
     space,
-    offsideV: tr.pids.some((_, i) => tr.att[i] && i !== tr.youIdx && offsideBy(tr, i, lineV) > 0) ? lineV + OFFSIDE_TOL_M : null, // draw the real line, not the noise allowance
+    offsideV: tr.pids.some((_, i) => tr.att[i] && i !== tr.youIdx && offsideBy(tr, i, lineV) > 0) ? lineV + MODEL.geometry.offsideTolM : null, // draw the real line, not the noise allowance
     threats,
     scores: { ...partial, brain: brainScore(partial) },
     breakdown: explain(tr, input.scans, snapped.idx, proLine, space, {
@@ -303,7 +299,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const offsideMsg = (i: number) => ({
     ...base,
     headline: 'Offside!',
-    detail: `#${tr.nums[i]} was ${(offsideBy(tr, i, lineV) + OFFSIDE_TOL_M).toFixed(1)} m beyond the offside line when you passed – free kick to the opponents. ${bestLine}`,
+    detail: `#${tr.nums[i]} was ${(offsideBy(tr, i, lineV) + MODEL.geometry.offsideTolM).toFixed(1)} m beyond the offside line when you passed – free kick to the opponents. ${bestLine}`,
     tone: 'bad' as const,
   })
   const proFound = proIsBest ? ' The pro found it.' : ''
@@ -356,20 +352,21 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     return { ...base, headline: 'Better than the pro!', detail: `${ran}${bestDesc} ${where} was even better – ${hint}.`, tone: 'great' }
   return {
     ...base,
-    headline: space ? (partial.decision >= 75 ? 'Good pass into space' : `#${tr.nums[space.takerIdx]} got there`) : `${bestDesc} ${where} was the best option`,
+    headline: space ? (partial.decision >= MODEL.feedback.goodDecision ? 'Good pass into space' : `#${tr.nums[space.takerIdx]} got there`) : `${bestDesc} ${where} was the best option`,
     detail: `${ran}${space ? `${bestDesc} ${where} was the best option – ${hint}.` : `${cap(hint)}.`}${proIsBest ? ' The pro found it.' : ` ${proLine}`}`,
-    tone: space && partial.decision >= 75 ? 'great' : space || partial.decision >= 70 ? 'ok' : 'bad',
+    tone: space && partial.decision >= MODEL.feedback.goodDecision ? 'great' : space || partial.decision >= MODEL.feedback.okDecision ? 'ok' : 'bad',
   }
 }
 
-/** "ran onto it ..." by the chance to arrive: a close race only when it really was close */
+/** "ran onto it ..." by the chance to arrive: a close race only when it really was close (MODEL.feedback) */
 function raceWon(p: number | null, rival: string | null): string {
-  if (p === null || !rival || p >= 0.85) return 'with time to spare'
-  if (p >= 0.6) return `ahead of ${rival}`
+  const F = MODEL.feedback
+  if (p === null || !rival || p >= F.comfortableP) return 'with time to spare'
+  if (p >= F.closeRaceHi) return `ahead of ${rival}`
   return `in a close race with ${rival}`
 }
 
 /** "<opponent> ... your pass" by the chance to arrive */
 function raceLost(p: number | null): string {
-  return p !== null && p >= 0.4 ? 'won a close race to' : 'got to'
+  return p !== null && p >= MODEL.feedback.closeRaceLo ? 'won a close race to' : 'got to'
 }

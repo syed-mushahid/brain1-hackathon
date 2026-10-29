@@ -6,7 +6,8 @@ import { FPS, idxOf, posAt, toPortrait, type Track } from './track'
 import { scanParts } from './scoring'
 import { scoredOptions, SEARCH, type BestPass } from './best'
 import { toPoints, VALUE } from './value'
-import { offsideBy, offsideLineV, OFFSIDE_TOL_M, passKind, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
+import { offsideBy, offsideLineV, passKind, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
+import { MODEL } from './model.config'
 import { lookWord, RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
 export interface CompareCol {
@@ -182,7 +183,7 @@ export function explain(
       points.push(
         space.asPro
           ? `Your tap matched the pro’s pass, so you get what really happened: #${spaceOpt.num} ran onto it`
-          : rival >= 0 && (spaceOpt.p ?? 1) < 0.6
+          : rival >= 0 && (spaceOpt.p ?? 1) < MODEL.feedback.closeRaceHi
             ? `#${spaceOpt.num} beat ${who(rival)} to it in a close race${pTxt(spaceOpt.p)}`
             : rival >= 0
               ? `#${spaceOpt.num} reached the ball after ${space.t.toFixed(1)} s, ahead of the quickest opponent, ${who(rival)}${pTxt(spaceOpt.p)}`
@@ -220,13 +221,13 @@ export function explain(
   }
   if (facts.memory)
     points.push(
-      `Memory: you aimed ${facts.memory.dist.toFixed(1)} m from where #${facts.memory.num} would be when the ball arrived (3 m or closer = full marks)`,
+      `Memory: you aimed ${facts.memory.dist.toFixed(1)} m from where #${facts.memory.num} would be when the ball arrived (${MODEL.scoring.spaceMemory.perfectM} m or closer = full marks)`,
     )
   if (B.intoSpace && !mineIsBest && !proIsBest)
     points.push(`The best was ${bestName}: #${best.num} could run onto it ${B.t.toFixed(1)} s after the pass${pTxt(best.p)}`)
   if (Bv)
     points.push(
-      `Brave option: ${braveName} was worth more (${Math.round(Bv.o.value)} vs ${Math.round(best.value)}) but had only a ${Math.round((Bv.o.p ?? 0) * 100)}% chance to arrive – the best option needs 60%+`,
+      `Brave option: ${braveName} was worth more (${Math.round(Bv.o.value)} vs ${Math.round(best.value)}) but had only a ${Math.round((Bv.o.p ?? 0) * 100)}% chance to arrive – the best option needs ${Math.round(MODEL.best.minP * 100)}%+`,
     )
   const risks = [space?.asPro ? null : riskLine(facts.mine, myName, false), riskLine(facts.pro?.risk ?? null, proName, true)].filter(
     (x): x is string => x !== null,
@@ -235,7 +236,7 @@ export function explain(
   const offside = tr.pids
     .map((_, i) => i)
     .filter((i) => tr.att[i] && i !== tr.youIdx && offsideBy(tr, i, lineV) > 0)
-    .map((i) => `#${tr.nums[i]} (${(offsideBy(tr, i, lineV) + OFFSIDE_TOL_M).toFixed(1)} m)`)
+    .map((i) => `#${tr.nums[i]} (${(offsideBy(tr, i, lineV) + MODEL.geometry.offsideTolM).toFixed(1)} m)`)
   if (offside.length)
     risks.push(`Offside when you passed: ${offside.join(', ')} beyond the offside line – a pass to them is a free kick for the opponents`)
   points.push(...risks, proLine)
@@ -244,7 +245,7 @@ export function explain(
     `P comes from a race model, Spearman-style (2017): the ball travels at ${RACE.ballSpeed} m/s (over ${RACE.loftFrom} m it’s lofted); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
     `Goal chances: Expected Possession Value grid by Laurie Shaw (LaurieOnTracking, MIT licence). ` +
     `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes. ` +
-    `Taps aren’t precise: a pass into space is also tried 2.5 m around your tap, and a tap within 5 m of where the pro’s pass was collected gets the real outcome. ` +
+    `Taps aren’t precise: a pass into space is also tried ${MODEL.taps.aimR} m around your tap, and a tap within ${MODEL.taps.proSnapM} m of where the pro’s pass was collected gets the real outcome. ` +
     `The best pass can be into space: spots around every onside teammate are tried.`
 
   const riskCell = (r: Risk | null): CompareCol['risk'] => {

@@ -2,23 +2,23 @@
 //
 // Simple race model, evaluated with everyone's true position and velocity at reception:
 //   ball    rolls from "you" to the tap point at ballSpeed and stops there; passes longer than
-//           loftFrom are lofted and can only be reached in the last LOFT_LANDING share of the flight
+//           loftFrom are lofted and can only be reached where they are low (flight())
 //   player  keeps running for react seconds, then sprints straight at runSpeed; he can control
 //           the ball within reach metres
 //   an opponent wins the ball at a point on its path if he gets there before the ball does; anyone
 //   wins it at the end point (where you aimed) whenever he gets there (it waits). Teammates go for
 //   the end point; only if they lose that race may one of them stop the ball on its way. Earliest winner takes it; a tap outside the pitch
 //   nobody reaches in time goes out of play.
-// The numbers are fitted to the 30 real moments: with the pro's actual pass as the "tap", the model
-// should name the player who really won the ball (see RACE).
+// All numbers live in model.config.ts (race, flight, passModel, risk).
 import type { PassOption, Team } from '../types'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
 import { laneOpen, offsideBy, passDirection } from './facts'
-export { offsideBy, offsideLineV, OFFSIDE_TOL_M } from './facts'
-import { passEV, pSuccess, SLACK_BIAS } from './value'
+export { offsideBy, offsideLineV } from './facts'
+import { passEV, pSuccess } from './value'
+import { MODEL } from './model.config'
 
 /** race margin used when no opponent can get near the pass at all (P(success) ~ 1) */
-export const NO_OPPONENT_S = 3
+export const noOpponentS = () => MODEL.passModel.noOpponentS
 
 export interface RaceParams {
   ballSpeed: number // m/s
@@ -28,19 +28,15 @@ export interface RaceParams {
   runSpeed: number // m/s
   reach: number // m
 }
-// fitted on the 30 moments: the right team wins the ball in 25 / 30 (pro pass as the tap: 19 / 24
-// completed, 6 / 6 intercepted). Giving near ties to your teammate was tried: it lost 3 of the real
-// interceptions (they are close races), so a tap that matches the pro's pass uses the real outcome instead.
-export const RACE: RaceParams = { ballSpeed: 15, loftFrom: 30, react: 0.5, reactMates: 0.4, runSpeed: 7, reach: 1 }
+// Giving near ties to your teammate was tried: it lost 3 of the real interceptions (they are close
+// races), so a tap that matches the pro's pass uses the real outcome instead.
+export const RACE: RaceParams = MODEL.race
 /**
- * Lofted passes (taps beyond loftFrom, or a pro pass whose measured height went above 1.8 m): a 30°
- * launch arc. The ball moves at its ground speed v0·cos 30° (v0 from the range), can only be reached
- * where it is below LOFT_REACH_Z (just after the kick and as it comes down), and the receiver needs
- * LOFT_CONTROL_S extra to control a dropping ball.
+ * Lofted passes (taps beyond loftFrom, or a pro pass whose measured height went above flight.loftedZ):
+ * a launch arc of flight.loftAngleDeg. The ball moves at its ground speed v0·cos(angle) (v0 from the
+ * range), can only be reached where it is below flight.reachZ (just after the kick and as it comes
+ * down), and the receiver needs flight.controlS extra to control a dropping ball.
  */
-const LOFT_ANGLE = Math.PI / 6
-const LOFT_REACH_Z = 2.0
-export const LOFT_CONTROL_S = 0.5
 const G = 9.81
 
 export interface Flight {
@@ -56,15 +52,17 @@ export interface Flight {
 }
 
 export function flight(L: number, lofted: boolean, P: RaceParams = RACE): Flight {
+  const F = MODEL.flight
   if (!lofted || L < 1e-3)
-    return { t: (s) => s / P.ballSpeed, z: () => 0, reachable: (s) => s >= START_M, arrive: L / P.ballSpeed, control: 0 }
-  const v0 = Math.sqrt((L * G) / Math.sin(2 * LOFT_ANGLE))
-  const vx = v0 * Math.cos(LOFT_ANGLE)
-  const z = (s: number) => Math.max(0, s * Math.tan(LOFT_ANGLE) * (1 - s / L))
-  return { t: (s) => s / vx, z, reachable: (s) => s >= START_M && z(s) < LOFT_REACH_Z, arrive: L / vx, control: LOFT_CONTROL_S }
+    return { t: (s) => s / P.ballSpeed, z: () => 0, reachable: (s) => s >= F.startM, arrive: L / P.ballSpeed, control: 0 }
+  const a = (F.loftAngleDeg * Math.PI) / 180
+  const v0 = Math.sqrt((L * G) / Math.sin(2 * a))
+  const vx = v0 * Math.cos(a)
+  const z = (s: number) => Math.max(0, s * Math.tan(a) * (1 - s / L))
+  return { t: (s) => s / vx, z, reachable: (s) => s >= F.startM && z(s) < F.reachZ, arrive: L / vx, control: F.controlS }
 }
-const STEP_M = 0.5
-const START_M = 1.5 // the first metre and a half is still at your feet
+const stepM = () => MODEL.flight.stepM
+const startM = () => MODEL.flight.startM // the first metre and a half is still at your feet
 
 export interface SpaceOutcome {
   /** where the ball was won, or where it crossed the line */
@@ -117,25 +115,9 @@ function race(tr: Track, P: RaceParams) {
   return { you, starts, timeTo, blocks }
 }
 
-/**
- * Static blockers: an opponent already within reach of the ball's path as it passes him gets this
- * race margin (s), whatever his reaction time; null = rule off. calibrate_pass_model.py fitted it on
- * 991 real passes: every value made the fit worse (no rule 0.299 log-loss, -0.5 s 0.302, -1 s 0.307,
- * -3 s "blocked" 0.331) - 73 % of real passes with an opponent within 0.5 m of the path still arrived
- * (96 % with nobody within 3 m), and the race margin already covers that. So it is off.
- */
-export const BLOCKER_SLACK: number | null = null
-
-
-/**
- * Risk levels for passRisk's slack. The model is too simple to say "this pass would be cut out"
- * (it can't see which way players face), so the levels are relative to the pros: of the 24 real
- * completed pro passes in moments.json, 6 were tighter than RISK_HIGH_S and 16 tighter than RISK_MEDIUM_S.
- */
-export const RISK_HIGH_S = -0.5
-export const RISK_MEDIUM_S = 0.3
+/** Risk levels for passRisk's slack, relative to the pros' completed passes (MODEL.risk). */
 export const riskLevel = (slack: number): 'low' | 'medium' | 'high' =>
-  slack < RISK_HIGH_S ? 'high' : slack < RISK_MEDIUM_S ? 'medium' : 'low'
+  slack < MODEL.risk.highS ? 'high' : slack < MODEL.risk.mediumS ? 'medium' : 'low'
 
 /**
  * The closest an opponent comes to winning a pass from "you" to `target`, received there at time
@@ -166,11 +148,13 @@ export function passRisk(
   let best: Risk | null = null
   for (let i = 0; i < tr.n; i++) {
     if (tr.att[i]) continue
-    for (let s = Math.min(START_M, L); s <= L + 1e-6; s += STEP_M) {
+    const STEP_M = stepM()
+    const blocker = MODEL.passModel.blockerSlack
+    for (let s = Math.min(startM(), L); s <= L + 1e-6; s += STEP_M) {
       if (!B.reachable(s) && s < L - STEP_M) continue // over his head
       const q: [number, number] = [you[0] + ux * s, you[1] + uy * s]
       let slack = timeTo(i, q) - (s >= L - STEP_M ? Math.max(B.t(s), tEnd) : B.t(s))
-      if (BLOCKER_SLACK !== null && blocks(i, q, B.t(s))) slack = Math.min(slack, BLOCKER_SLACK)
+      if (blocker !== null && blocks(i, q, B.t(s))) slack = Math.min(slack, blocker)
       if (!best || slack < best.slack) best = { idx: i, slack, at: q }
     }
   }
@@ -211,10 +195,10 @@ export function optionAt(
   // a lofted pass can only be blocked where it is low again, as it comes down
   const B = flight(dist, loft, P)
   let k = 0
-  if (loft) for (let s = dist; s > 0 && B.reachable(s); s -= STEP_M) k = s / dist
+  if (loft) for (let s = dist; s > 0 && B.reachable(s); s -= stepM()) k = s / dist
   const lane = laneOpen([you[0] + (end[0] - you[0]) * k, you[1] + (end[1] - you[1]) * k], end, defs)
   const space = Math.min(30, Math.max(0, nearest) * P.runSpeed) // that head start, in metres of running
-  const ev = passEV(you, end, passRisk(tr, end, t, P, loft)?.slack ?? NO_OPPONENT_S)
+  const ev = passEV(you, end, passRisk(tr, end, t, P, loft)?.slack ?? noOpponentS())
   const r1 = (x: number) => Math.round(x * 10) / 10
   return {
     pid: tr.pids[idx],
@@ -271,7 +255,7 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
       const t = Math.max(B.arrive, timeTo(i, at(L))) + B.control
       if (t < T) [w, T, Q] = [i, t, at(L)]
     } else
-      for (let s = Math.min(START_M, pathL); s <= pathL + 1e-6; s += STEP_M) {
+      for (let s = Math.min(startM(), pathL); s <= pathL + 1e-6; s += stepM()) {
         if (!B.reachable(s)) continue
         const q = at(s)
         if (timeTo(i, q) <= B.t(s)) {
@@ -294,7 +278,7 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
       run: run(risk.idx, end),
       t: B.t(Math.hypot(end[0] - you[0], end[1] - you[1])),
       rivalIdx: w,
-      margin: -(risk.slack + SLACK_BIAS),
+      margin: -(risk.slack + MODEL.passModel.bias),
       option: null,
     }
   }
@@ -306,7 +290,7 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
     run: run(w, Q),
     t: T,
     rivalIdx: risk?.idx ?? -1,
-    margin: risk ? risk.slack + SLACK_BIAS : Infinity,
+    margin: risk ? risk.slack + MODEL.passModel.bias : Infinity,
     ...(offsideBy(tr, w) > 0 ? { option: null, offside: true } : { option: optionAt(tr, w, Q, T, P, loft) }),
   }
 }
@@ -315,13 +299,12 @@ export function simulateSpacePass(tr: Track, target: [number, number], P: RacePa
 /**
  * Memory for a pass into space: how far the tap was from where your nearest teammate would be
  * when the ball got there (his position + velocity, carried on for the ball's travel time, at most
- * MEMORY_LOOKAHEAD_S). You had to remember where he was and where he was going.
+ * taps.memoryLookaheadS). You had to remember where he was and where he was going.
  */
-const MEMORY_LOOKAHEAD_S = 2.5
 export function spaceMemory(tr: Track, tap: [number, number], P: RaceParams = RACE): { idx: number; dist: number } {
   const f = tr.rec
   const you = posAt(tr, f, tr.youIdx)
-  const t = Math.min(MEMORY_LOOKAHEAD_S, Math.hypot(tap[0] - you[0], tap[1] - you[1]) / P.ballSpeed)
+  const t = Math.min(MODEL.taps.memoryLookaheadS, Math.hypot(tap[0] - you[0], tap[1] - you[1]) / P.ballSpeed)
   let best = { idx: -1, dist: Infinity }
   for (let i = 0; i < tr.n; i++) {
     if (!tr.att[i] || i === tr.youIdx) continue
@@ -344,5 +327,5 @@ export function passKind(tr: Track, idx: number, end: [number, number]): 'throug
   vs.sort((a, b) => a - b)
   const line = vs[1] ?? 0 // deepest outfield defender (the goalkeeper is the deepest player)
   const from = posAt(tr, tr.rec, idx)
-  return end[1] < line && end[1] < from[1] - 2 ? 'through ball' : 'pass into space'
+  return end[1] < line && end[1] < from[1] - MODEL.geometry.throughBallM ? 'through ball' : 'pass into space'
 }

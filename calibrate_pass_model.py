@@ -20,18 +20,30 @@ import argparse
 import json
 import math
 import os
+import subprocess
 from collections import Counter
 
 import numpy as np
 
 import extract_moments as em
 
-# race settings: keep in step with RACE in src/game/space.ts
-BALL_SPEED = 15.0
-LOFT_ANGLE, LOFT_REACH_Z, LOFT_CONTROL_S, G = math.pi / 6, 2.0, 0.5, 9.81   # space.ts flight()
-LOFTED_Z = 1.8   # a real pass is lofted when its measured ball height went above this
-REACT_OPP, REACT_MATE, RUN_SPEED, REACH = 0.5, 0.4, 7.0, 1.0
-START_M, STEP_M, FPS_RAW = 1.5, 0.5, 25
+
+
+def model_config():
+    """The game's own numbers (src/game/model.config.ts), read through node, so nothing is duplicated."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = subprocess.run(['node', '--import', 'tsx', os.path.join('scripts', 'print_config.ts')], cwd=here,
+                         capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+# race and flight settings: the game's config (race, flight)
+_M = model_config()
+BALL_SPEED = float(_M['race']['ballSpeed'])
+LOFT_ANGLE, LOFT_REACH_Z, LOFT_CONTROL_S, G = math.radians(_M['flight']['loftAngleDeg']), _M['flight']['reachZ'], _M['flight']['controlS'], 9.81
+LOFTED_Z = _M['flight']['loftedZ']   # a real pass is lofted when its measured ball height went above this
+REACT_OPP, REACT_MATE, RUN_SPEED, REACH = _M['race']['react'], _M['race']['reactMates'], _M['race']['runSpeed'], _M['race']['reach']
+START_M, STEP_M, FPS_RAW = _M['flight']['startM'], _M['flight']['stepM'], 25
 BLOCKER_SLACKS = [None, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0]   # tried for space.ts BLOCKED_SLACK (None = no rule)
 
 

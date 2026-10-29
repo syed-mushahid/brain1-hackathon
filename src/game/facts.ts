@@ -6,23 +6,16 @@
 //   offsideLineV     the offside line (Law 11) when you pass
 import type { Direction, MomentData, OptionFacts } from '../types'
 import { PITCH_L, posAt, type Track } from './track'
-
-/** a real pass whose measured height went above this (m) counts as lofted */
-export const LOFTED_Z = 1.8
-/** without a measured height, a pass longer than this (m) counts as lofted */
-export const LOFT_FROM_M = 30
-/** |progress| below this is always 'sideways' (m) */
-const DIRECTION_MIN_M = 3
-/** offside only when this far beyond the line (m): tracking noise */
-export const OFFSIDE_TOL_M = 0.5
+import { MODEL } from './model.config'
 
 /**
  * 'forward' | 'sideways' | 'backward', by the angle to the opponents' goal line:
- * forward = at least DIRECTION_MIN_M ahead and within 60° of straight ahead (progress >= dist / 2).
+ * forward = at least geometry.directionMinM ahead and within 60° of straight ahead (progress >= dist / 2).
  */
 export function passDirection(dist: number, progress: number): Direction {
-  if (progress >= DIRECTION_MIN_M && progress >= dist / 2) return 'forward'
-  if (progress <= -DIRECTION_MIN_M && -progress >= dist / 2) return 'backward'
+  const min = MODEL.geometry.directionMinM
+  if (progress >= min && progress >= dist / 2) return 'forward'
+  if (progress <= -min && -progress >= dist / 2) return 'backward'
   return 'sideways'
 }
 
@@ -44,14 +37,14 @@ export function laneOpen(a: [number, number], b: [number, number], defs: [number
 /**
  * Offside (Law 11), judged when you pass (the reception frame): a teammate is offside in the
  * opponents' half when nearer their goal line than both the ball and the second-last opponent, by
- * more than OFFSIDE_TOL_M (tracking noise). Portrait coordinates: attack is up (smaller v).
+ * more than geometry.offsideTolM (tracking noise). Portrait coordinates: attack is up (smaller v).
  * Returns the v of the line.
  */
 export function offsideLineV(tr: Track): number {
   const vs: number[] = []
   for (let i = 0; i < tr.n; i++) if (!tr.att[i]) vs.push(posAt(tr, tr.rec, i)[1])
   vs.sort((a, b) => a - b)
-  return Math.min(vs[1] ?? PITCH_L, tr.ball[tr.rec * 2 + 1], PITCH_L / 2) - OFFSIDE_TOL_M
+  return Math.min(vs[1] ?? PITCH_L, tr.ball[tr.rec * 2 + 1], PITCH_L / 2) - MODEL.geometry.offsideTolM
 }
 /** metres a teammate is beyond the offside line (> 0 = offside) */
 export const offsideBy = (tr: Track, i: number, lineV = offsideLineV(tr)) => lineV - posAt(tr, tr.rec, i)[1]
@@ -101,7 +94,8 @@ export function pressure(tr: Track): number {
   return Math.min(...defenders(tr).map(([a, b]) => Math.hypot(a - u, b - v)))
 }
 
-/** Was the pro's real pass lofted? Measured height when the file has it, else its length. */
+/** Was the pro's real pass lofted? Measured height when the file has it (flight.loftedZ), else the
+ *  documented fallback: longer than race.loftFrom, like your own taps. */
 export function proLofted(m: MomentData): boolean {
-  return m.actual.ball_max_z !== undefined ? m.actual.ball_max_z > LOFTED_Z : m.actual.length > LOFT_FROM_M
+  return m.actual.ball_max_z !== undefined ? m.actual.ball_max_z > MODEL.flight.loftedZ : m.actual.length > MODEL.race.loftFrom
 }

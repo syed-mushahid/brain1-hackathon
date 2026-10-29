@@ -4,15 +4,9 @@
 //   P(success)  = logistic of the race margin (space.ts passRisk "slack": how much later than the ball /
 //                 the receiver the quickest opponent gets to the ball's path), Spearman-style:
 //                   P = 1 / (1 + exp(-pi / (sqrt 3 * sigma) * (slack + bias)))
-//                 Spearman's sigma = 0.45 s with no bias scored worse than a constant guess on our data;
-//                 bias and sigma are fitted on 991 real DFL passes by calibrate_pass_model.py
-//                 (pass_model_calibration.json), each with its measured ground / lofted flight:
-//                 bias 1.1 s, sigma 0.90 s, log-loss 0.275 vs 0.375 for the base rate, AUC of the
-//                 slack 0.88. (Our race model gets defenders to the ball about a second too early;
-//                 the bias puts that right.)
+//                 sigma and bias in model.config.ts (passModel), fitted by calibrate_pass_model.py
 //   EV          = P * (EPV(target) - EPV(ball)) - (1 - P) * k * EPV_opponent(target)
-//                 k = risk aversion: how much more a lost ball hurts than its plain EPV says, fitted so
-//                 the pros' real passes come within 5 points of the best option in about half the moments
+//                 k = risk aversion (model.config.ts value.k)
 //   EPV         = Shaw's EPV grid (epvGrid.ts, MIT); for the opponents the same grid mirrored
 //   points      = EV rescaled linearly to 0-100 (EV_LO -> 0, EV_HI -> 100, clipped) for display/scoring
 //
@@ -20,15 +14,14 @@
 // in data coordinates (x = 105 - v along the pitch towards the opponents' goal, y = 68 - u).
 import { EPV_GRID } from './epvGrid'
 import { PITCH_L, PITCH_W } from './track'
+import { MODEL } from './model.config'
 
-/** time-to-intercept uncertainty (s), fitted (Spearman / Shaw use 0.45) */
-export const TTI_SIGMA = 0.9
-/** shift of the race margin (s), fitted: the race model's defenders are a bit too quick */
-export const SLACK_BIAS = 1.1
-const K = Math.PI / (Math.sqrt(3) * TTI_SIGMA)
-
-/** Probability the pass reaches your team, from the race margin (s; > 0 = your side gets there first). */
-export const pSuccess = (slack: number) => 1 / (1 + Math.exp(-K * (slack + SLACK_BIAS)))
+/** Probability the pass reaches your team, from the race margin (s; > 0 = your side gets there first).
+ *  sigma and bias: MODEL.passModel. */
+export function pSuccess(slack: number): number {
+  const { sigma, bias } = MODEL.passModel
+  return 1 / (1 + Math.exp((-Math.PI / (Math.sqrt(3) * sigma)) * (slack + bias)))
+}
 
 const ROWS = EPV_GRID.length
 const COLS = EPV_GRID[0].length
@@ -63,15 +56,8 @@ export interface PassEV {
   points: number
 }
 
-/**
- * k (risk aversion) and the display scale lo -> 0, hi -> 100 (about the 2nd and 98th percentiles of
- * the EV of all options and searched spots in the 42 moments, for this k). Fitted by
- * scripts/fit_risk_aversion.mjs; an object so that script can try other values.
- */
-// fitted (with best.ts SEARCH) after the lofted-flight recalibration: k = 5 with a 20-point premium for
-// passes into space and spots only along a running teammate's run puts 16 / 37 = 43 % of the pros'
-// passes within 5 points of the best (k alone: 35 % at best), best into space in 7 / 42 moments
-export const VALUE = { k: 5, lo: -0.058, hi: 0.0248 }
+/** k (risk aversion) and the display scale lo -> 0, hi -> 100: MODEL.value (fitted by fitRiskAversion.ts) */
+export const VALUE = MODEL.value
 export const toPoints = (ev: number) => Math.round(1000 * Math.max(0, Math.min(1, (ev - VALUE.lo) / (VALUE.hi - VALUE.lo)))) / 10
 
 export function passEV(ball: [number, number], target: [number, number], slack: number): PassEV {

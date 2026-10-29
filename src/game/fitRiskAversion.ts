@@ -6,7 +6,7 @@
 // all searched spots), then measures how often the pro's real pass is within 5 points of the best.
 // The pro's pass is valued as a decision (its expected value), whatever happened to it.
 import { buildTrack, idxOf, PITCH_L, PITCH_W, posAt, toPortrait } from './track'
-import { findBestPass, findBravePass, SAME_PASS_M, scoredOptions, SEARCH } from './best'
+import { findBestPass, findBravePass, scoredOptions, SEARCH } from './best'
 import { optionAt, RACE, simulateSpacePass } from './space'
 import { VALUE } from './value'
 import { proLofted } from './facts'
@@ -30,7 +30,8 @@ export interface KFit {
 export async function fitRiskAversion(
   ks = [1, 2, 3, 4, 6],
   gains = [2, 5, 8, 12],
-  cones: (number | null)[] = [null, Math.PI / 3],
+  /** half-angles of the run cone (degrees), null = all round */
+  cones: (number | null)[] = [null, 60],
   /** value the pro's passes with their measured flight (lofted above 1.8 m), or all as ground passes */
   measuredLoft = true,
 ): Promise<KFit[]> {
@@ -43,7 +44,7 @@ export async function fitRiskAversion(
   for (const cone of cones) {
     VALUE.k = k
     SEARCH.spaceGain = gain
-    SEARCH.runCone = cone
+    SEARCH.runConeDeg = cone
     // 1. the display scale for this k
     const evs: number[] = []
     for (const m of data.moments) {
@@ -87,7 +88,7 @@ export async function fitRiskAversion(
         const at = posAt(tr, tr.rec, i)
         const loft = measuredLoft ? proLofted(m) : false
         v =
-          Math.hypot(end[0] - at[0], end[1] - at[1]) >= SAME_PASS_M
+          Math.hypot(end[0] - at[0], end[1] - at[1]) >= SEARCH.samePassM
             ? optionAt(tr, i, end, undefined, RACE, loft).value
             : loft
               ? optionAt(tr, i, at, undefined, RACE, true).value
@@ -107,7 +108,7 @@ export async function fitRiskAversion(
     rows.push({
       k,
       spaceGain: gain,
-      runCone: cone === null ? 'all round' : `±${Math.round((cone * 180) / Math.PI)}°`,
+      runCone: cone === null ? 'all round' : `±${cone}°`,
       lo: +VALUE.lo.toFixed(4),
       hi: +VALUE.hi.toFixed(4),
       proWithin5: `${near}/${pros} (${Math.round((100 * near) / pros)}%)`,

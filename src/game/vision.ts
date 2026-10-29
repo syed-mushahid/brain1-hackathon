@@ -1,6 +1,8 @@
 // What "you" can see. Angles are in screen space of the portrait pitch:
 // 0 = straight up (towards the opponent goal), +PI/2 = right, -PI/2 = left.
 
+import { MODEL } from './model.config'
+
 const DEG = Math.PI / 180
 
 /** Always visible: a bubble around "you" and around the ball (m). */
@@ -14,8 +16,8 @@ export const CONE_RANGE = 50
 const RANGE_FEATHER = 8
 /** A head can't snap round: max turn speed (rad/s). Looking behind takes ~0.5 s. */
 export const HEAD_TURN = 360 * DEG
-/** Looks in the last 1.5 s before reception count as "recent". */
-export const RECENT_SCAN_S = 1.5
+/** Looks in the last scoring.recentS (1.5 s) before reception count as "recent" (model.config.ts). */
+export const RECENT_SCAN_S = MODEL.scoring.recentS
 
 /** One continuous look (hold on the dial or the pitch). Times = seconds before reception. */
 export interface ScanRecord {
