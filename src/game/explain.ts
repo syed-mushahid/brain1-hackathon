@@ -23,7 +23,11 @@ export interface PassFacts {
   pro: { o: PassOption; intoSpace: boolean; risk: Risk | null } | null
   mine: Risk | null
   best: BestPass
+  /** the pro's pass is exactly the best pass */
   proIsBest: boolean
+  /** the pro's pass is as good as the best (best.asGoodPoints): it is presented as the best */
+  proAsGood: boolean
+  /** your pass is as good as the best */
   mineIsBest: boolean
   mineIsPro: boolean
   /** a pass into space: the teammate you aimed for and how far the tap was from where he was heading */
@@ -139,7 +143,12 @@ export function explain(
   const who = (i: number) => `${tr.att[i] ? '' : 'red '}#${tr.nums[i]}`
   const spaceOpt = space?.option ?? null
   const myOpt = spaceOpt ?? mine
-  const { proIsBest, mineIsBest, mineIsPro } = facts
+  const { proIsBest, proAsGood, mineIsBest, mineIsPro } = facts
+  // the option the text holds up as the best: the pro's pass when it is as good as the best
+  const asGoodTxt = (o: PassOption) =>
+    proIsBest ? ' (the best option – the pro found it)' : ` (as good as the best option: ${Math.round(o.value)} vs ${Math.round(best.value)})`
+  const refStrengths = () =>
+    proAsGood && pro ? strengths(pro, `${cap(proName)}${asGoodTxt(pro)}`) : strengths(best, bestName)
   // passes as noun phrases
   // "through ball" only when the receiver runs on behind the defensive line, else "pass into space"
   const kindName = (whose: string, idx: number, end: [number, number], intoSpace: boolean, n: number, lofted = false) => {
@@ -177,7 +186,7 @@ export function explain(
   let points: string[] = []
   if (space && space.takerIdx < 0) {
     title = 'Your pass went out of play'
-    points = ['Nobody could reach it before it crossed the line', strengths(best, bestName)]
+    points = ['Nobody could reach it before it crossed the line', refStrengths()]
   } else if (space && space.team === 'def') {
     const rival = space.rivalIdx >= 0 && Number.isFinite(space.margin) ? space.rivalIdx : -1
     title = `Why ${who(space.takerIdx)} intercepted your pass`
@@ -185,7 +194,7 @@ export function explain(
       rival >= 0
         ? `${who(space.takerIdx)} got to the ball before your quickest teammate, ${who(rival)}${pTxt(facts.myP)}`
         : `${who(space.takerIdx)} got to the ball – none of your teammates could reach it`,
-      strengths(best, bestName),
+      refStrengths(),
     ]
   } else {
     // a completed pass of yours (to feet or into space), or none at all
@@ -204,7 +213,7 @@ export function explain(
     if (myOpt && mineIsBest && mineIsPro) {
       title = 'You and the pro both found the best pass'
       points.push(strengths(myOpt, myName))
-    } else if (myOpt && mineIsBest && proIsBest && pro) {
+    } else if (myOpt && mineIsBest && proAsGood && pro) {
       title = 'You and the pro found equally good passes'
       points.push(`Yours: ${reasons(myOpt, myName, pro, proName)[0].replace(/^./, (c) => c.toLowerCase())}`)
       points.push(`The pro’s: ${reasons(pro, proName, myOpt, myName)[0].replace(/^./, (c) => c.toLowerCase())}`)
@@ -216,8 +225,10 @@ export function explain(
     } else if (myOpt && mineIsBest) {
       title = pro ? `Why ${myName} beat ${proName}` : 'You found the best pass'
       points.push(...(pro ? reasons(myOpt, myName, pro, proName) : [strengths(myOpt, myName)]))
-    } else if (myOpt && proIsBest && pro) {
-      title = `Why ${proName} – the best pass – beat ${myName}`
+    } else if (myOpt && proAsGood && pro) {
+      // compare yours with the pro's: his pass is (as good as) the best
+      title = proIsBest ? `Why ${proName} – the best pass – beat ${myName}` : `Why ${proName} was better than ${myName}`
+      if (!proIsBest) points.push(`${cap(proName)} was as good as the best option (${Math.round(pro.value)} vs ${Math.round(best.value)})`)
       points.push(...reasons(pro, proName, myOpt, myName))
     } else if (myOpt) {
       title = `Why ${bestName} was better than ${myName}${mineIsPro ? ' (and the pro’s)' : ''}`
@@ -225,16 +236,20 @@ export function explain(
       if (pro && !mineIsPro && myOpt.value > pro.value)
         points.push(`Still, yours beat the pro’s: ${reasons(myOpt, myName, pro, proName)[0].replace(/^./, (c) => c.toLowerCase())}`)
     } else {
-      title = proIsBest ? `The pro found the best pass: ${bestName}` : `What ${bestName} offered`
-      points.push(strengths(best, bestName))
-      if (pro && !proIsBest) points.push(...reasons(best, bestName, pro, proName).slice(0, 2))
+      title = proIsBest
+        ? `The pro found the best pass: ${bestName}`
+        : proAsGood && pro
+          ? `The pro found it: ${proName}, as good as the best option`
+          : `What ${bestName} offered`
+      points.push(refStrengths())
+      if (pro && !proAsGood) points.push(...reasons(best, bestName, pro, proName).slice(0, 2))
     }
   }
   if (facts.memory)
     points.push(
       `Memory: you aimed ${facts.memory.dist.toFixed(1)} m from where #${facts.memory.num} would be when the ball arrived (${MODEL.scoring.spaceMemory.perfectM} m or closer = full marks)`,
     )
-  if (B.intoSpace && !mineIsBest && !proIsBest)
+  if (B.intoSpace && !mineIsBest && !proAsGood)
     points.push(`The best was ${bestName}: #${best.num} could run onto it ${B.t.toFixed(1)} s after the pass${pTxt(best.p)}`)
   if (Bv)
     points.push(
@@ -278,8 +293,9 @@ export function explain(
     cols.push({ label, tone: 'mine', o: myOpt, risk: riskCell(facts.mine) })
   }
   if (!mineIsPro)
-    cols.push({ label: pro ? `Pro ${run(pro, proSpace)}${proIsBest ? ' · best' : ''}` : 'Pro', tone: 'pro', o: pro, risk: riskCell(facts.pro?.risk ?? null) })
-  if (!mineIsBest && !proIsBest) cols.push({ label: `Best ${run(best, B.intoSpace)}`, tone: 'best', o: best, risk: bestRisk })
+    cols.push({ label: pro ? `Pro${proAsGood ? ' = best' : ''} ${run(pro, proSpace)}` : 'Pro', tone: 'pro', o: pro, risk: riskCell(facts.pro?.risk ?? null) })
+  // one column per different option: no separate "best" when yours or the pro's is as good
+  if (!mineIsBest && !proAsGood) cols.push({ label: `Best ${run(best, B.intoSpace)}`, tone: 'best', o: best, risk: bestRisk })
   if (Bv)
     cols.push({
       label: `Brave ${run(Bv.o, Bv.intoSpace)}`,
@@ -340,6 +356,11 @@ export function explain(
   } else {
     lines.push(`You saw ${bestN} ${lastSaw.toFixed(1)} s before the ball arrived – a fresh picture.`)
     if (myOpt && !mineIsBest) lines.push(`But you passed to #${myOpt.num} – trust what your scan showed you.`)
+  }
+  // the best option you were looking for: the pro chose it (or an equally good pass)
+  if (proAsGood && pro) {
+    const proI = idxOf(tr, pro.pid)
+    lines.push(proI === bestIdx ? `The pro chose ${bestN} too.` : `The pro chose #${pro.num} – just as good as ${bestN}.`)
   }
   const { timing, target } = scanParts(scans)
 

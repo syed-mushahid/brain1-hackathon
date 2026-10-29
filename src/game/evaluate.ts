@@ -1,7 +1,7 @@
 import type { Team } from '../types'
 import { idxOf, posAt, toPortrait, type Track } from './track'
 import { explain, type Breakdown } from './explain'
-import { findBestPass, findBravePass, samePass, scoredOptions } from './best'
+import { asGoodAsBest, findBestPass, findBravePass, isProAsGoodAsBest, proPassOf, samePass, scoredOptions } from './best'
 import { RACE } from './space'
 import { proLofted } from './facts'
 import { MODEL } from './model.config'
@@ -30,14 +30,17 @@ export interface RoundResult {
   tap: [number, number] | null
   tapDist: number | null
   bestIdx: number
-  /** the best pass (to feet or into space); alone = not the same as yours or the pro's (drawn separately) */
-  best: { idx: number; end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean }
+  /** the best pass (to feet or into space); alone = neither yours nor the pro's is as good (drawn
+   *  separately); ring = where the dashed "best" ring goes (on your pass or the pro's when as good) */
+  best: { idx: number; end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean; ring: [number, number] }
   /** your pass was lofted (a double tap) */
   lofted: boolean
   /** the pro's real pass was lofted (measured height) */
   proLofted: boolean
-  /** your pass is the best option (or as good as it) */
+  /** your pass is as good as the best option (within best.asGoodPoints) */
   mineIsBest: boolean
+  /** the pro's pass is as good as the best option (best.ts isProAsGoodAsBest) */
+  proAsGood: boolean
   proEnd: [number, number]
   /** the player who took the pro's pass over and his run to the ball (portrait metres) */
   run: { pts: [number, number][]; team: Team } | null
@@ -144,18 +147,13 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
             ? `The pro played it into space for #${takerNum} to run onto.`
             : `The pro played ${proTo}${m.actual.outcome === 'received' ? '' : ' – and lost the ball'}.` // tracking, not the event flag
 
-  // The pro's real pass, judged like yours: to a teammate's feet, or into space when the
-  // receiver had to run onto it (then it is scored at the spot he collected it, not where he stood).
+  // The pro's real pass, judged like yours (best.ts proPassOf): to a teammate's feet, or into space
+  // when the receiver had to run onto it, with its measured flight
   const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
-  const proIntoSpace =
-    m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= MODEL.best.samePassM
-  // valued with its measured flight: a lofted pro pass (ball above 1.8 m) as a lofted ball
+  const PP = proPassOf(tr)
+  const proIntoSpace = !!PP?.intoSpace
   const proLoft = proLofted(m)
-  const proOpt: PassOption | null = proIntoSpace
-    ? optionAt(tr, takerIdx, proEnd, undefined, RACE, proLoft)
-    : proLoft && proIdx >= 0
-      ? optionAt(tr, proIdx, posAt(tr, tr.rec, proIdx), undefined, RACE, true)
-      : (options.find((o) => o.pid === proPid) ?? null)
+  const proOpt: PassOption | null = PP?.o ?? null
   // for "better than the pro": a pro pass that was lost (intercepted / out) is worth nothing
   const proValue = m.actual.outcome === 'received' ? (proOpt?.value ?? 0) : 0
   // risk = the closest an opponent came to cutting the pass out (only for passes that got through)
@@ -273,12 +271,7 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     .filter((r): r is Risk => r !== null && riskLevel(r.slack) === 'high')
     .map((r) => ({ idx: r.idx, from: posAt(tr, tr.rec, r.idx), at: r.at }))
   // each pass as (receiver, end point): two passes are the same when those match (best.ts)
-  const proPass =
-    m.actual.outcome === 'received' && takerIdx >= 0
-      ? { idx: takerIdx, end: proEnd, lofted: proLoft }
-      : proIdx >= 0
-        ? { idx: proIdx, end: posAt(tr, tr.rec, proIdx), lofted: proLoft }
-        : null
+  const proPass = PP && { idx: PP.idx, end: PP.end, lofted: PP.lofted }
   const myPass =
     space && space.team === 'att' && !space.offside
       ? { idx: space.takerIdx, end: space.end, lofted: space.lofted }
@@ -294,8 +287,10 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     !!myPass && !!brave && samePass(myPass, brave) && (chosenValue ?? 0) >= best.o.value + 0.5 && (myP ?? 1) < MODEL.best.minP
   // the same pass as the best = same receiver and spot, and (nearly) the same value
   const proIsBest = !!proPass && samePass(proPass, best) && proValue >= best.o.value - MODEL.best.sameValue
-  const mineIsBest =
-    !!myPass && ((samePass(myPass, best) && (chosenValue ?? 0) >= best.o.value - MODEL.best.sameValue) || (chosenValue ?? 0) >= best.o.value - 0.5)
+  // as good as the best (best.asGoodPoints), however it was played: shown as the best option
+  const proAsGood = isProAsGoodAsBest(tr)
+  const mineIsBest = !!myPass && !lost && asGoodAsBest(tr, chosenValue)
+  const mineShownBest = mineIsBest && !mineIsBrave // a brave pass keeps the safer best beside it
   const mineIsPro = !!myPass && !!proPass && (samePass(myPass, proPass) || !!space?.asPro)
 
   // memory: against the teammate who got your pass (or the one it was meant for, if it was cut out)
@@ -313,12 +308,20 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     tap: input.tap,
     tapDist,
     bestIdx,
-    best: { idx: bestIdx, end: best.end, run: best.run, alone: !proIsBest && !mineIsBest, lofted: best.lofted },
+    best: {
+      idx: bestIdx,
+      end: best.end,
+      run: best.run,
+      alone: !proAsGood && !mineShownBest,
+      lofted: best.lofted,
+      ring: mineShownBest && myPass ? myPass.end : proAsGood && PP ? PP.ring : best.end,
+    },
     brave:
       brave && !mineIsBrave ? { idx: brave.idx, end: brave.end, run: brave.run, value: brave.o.value, p: brave.o.p ?? 1, lofted: brave.lofted } : null,
     lofted: space ? space.lofted : lofted,
     proLofted: proLoft,
     mineIsBest,
+    proAsGood,
     lost,
     p: myP,
     risk: myRisk ? riskLevel(myRisk.slack) : null,
@@ -341,12 +344,13 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     offsideV: tr.pids.some((_, i) => tr.att[i] && i !== tr.youIdx && offsideBy(tr, i, lineV) > 0) ? lineV + MODEL.geometry.offsideTolM : null, // draw the real line, not the noise allowance
     threats,
     scores: { ...partial, brain: brainScore(partial) },
-    breakdown: explain(tr, input.scans, snapped.idx, proLine, space, {
+    breakdown: explain(tr, input.scans, snapped.idx, proAsGood ? `${proLine.replace(/\.$/, '')} – ${proIsBest ? 'the best option: the pro found it' : 'as good a choice as the best option'}.` : proLine, space, {
       memory: spaceMem && { num: tr.nums[spaceMem.idx], dist: spaceMem.dist },
       pro: proOpt && { o: proOpt, intoSpace: proIntoSpace, risk: proRisk },
       mine: myRisk,
       best,
       proIsBest,
+      proAsGood,
       mineIsBest,
       mineIsPro,
       brave: mineIsBrave ? null : brave,
@@ -359,10 +363,28 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
   const offsideMsg = (i: number) => ({
     ...base,
     headline: 'Offside!',
-    detail: `#${tr.nums[i]} was ${(offsideBy(tr, i, lineV) + MODEL.geometry.offsideTolM).toFixed(1)} m beyond the offside line when you passed – free kick to the opponents. ${bestLine}`,
+    detail: `#${tr.nums[i]} was ${(offsideBy(tr, i, lineV) + MODEL.geometry.offsideTolM).toFixed(1)} m beyond the offside line when you passed – free kick to the opponents. ${bestLine}${proFound}`,
     tone: 'bad' as const,
   })
-  const proFound = proIsBest ? ' The pro found it.' : ''
+  // the pro's pass as good as the best: never word it as if he missed the best option
+  const proNum = PP ? `#${tr.nums[PP.idx]}` : ''
+  const delivery = () => {
+    const d: string[] = []
+    if (PP!.lofted !== best.lofted) d.push(PP!.lofted ? 'lofted' : 'along the ground')
+    if (PP!.intoSpace !== best.intoSpace) d.push(PP!.intoSpace ? 'into space' : 'to his feet')
+    return d.length ? d.join(', ') : 'to a different spot'
+  }
+  const proNote =
+    !proAsGood || !PP
+      ? ''
+      : m.actual.outcome !== 'received'
+        ? ` The pro’s choice, ${proNum}, was just as good – but this time it was cut out.`
+        : proIsBest
+          ? ' The pro found it.'
+          : PP.idx === bestIdx
+            ? ` The pro played it to ${proNum} too (${delivery()}), just as good.`
+            : ` The pro’s pass to ${proNum} was just as good.`
+  const proFound = proNote
   if (space?.offside) return offsideMsg(space.takerIdx)
   if (!input.tap) return { ...base, headline: 'Too slow!', detail: bestLine + proFound, tone: 'bad' }
   // what happened to your pass: the race, worded by its chance to arrive (so "close race" ~ 40-60 %)
@@ -391,12 +413,20 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     return {
       ...base,
       headline: 'Brave pass!',
-      detail: `${ran}Worth more than the safe best option, but only a ${Math.round((myP ?? 0) * 100)}% chance to arrive. ${bestDesc} ${where} was the safer choice.`,
+      detail: `${ran}Worth more than the safe best option, but only a ${Math.round((myP ?? 0) * 100)}% chance to arrive. ${bestDesc} ${where} was the safer choice.${proNote}`,
       tone: 'great',
     }
   if (mineIsBest && mineIsPro) return { ...base, headline: 'Same as the pro!', detail: `${ran}And it was the best option. Elite.`, tone: 'great' }
-  if (mineIsBest && proIsBest)
-    return { ...base, headline: 'As good as the pro!', detail: `${ran}You and the pro found different passes that were equally good.`, tone: 'great' }
+  if (mineIsBest && proAsGood)
+    return {
+      ...base,
+      headline: 'As good as the pro!',
+      detail:
+        myPass && PP && myPass.idx === PP.idx
+          ? `${ran}You and the pro both found ${proNum} – he played it ${PP.lofted ? 'lofted ' : ''}${PP.intoSpace ? 'into space' : 'to his feet'}, just as good.`
+          : `${ran}You and the pro found different passes that were equally good.`,
+      tone: 'great',
+    }
   if (mineIsBest) {
     // the main reason it beat the pro's pass (the first point after the race line, for a pass into space)
     const why = proOpt ? base.breakdown.why.points[space ? 1 : 0] : null
@@ -413,15 +443,15 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     }
   }
   if (mineIsPro)
-    return { ...base, headline: 'Same pass as the pro', detail: `${ran}But ${bestDesc.replace(/^A /, 'a ')} ${where} was the best option – ${hint}.`, tone: 'ok' }
+    return { ...base, headline: 'Same pass as the pro', detail: `${ran}But ${bestDesc.replace(/^A /, 'a ')} ${where} was the best option – ${hint}.${proNote}`, tone: 'ok' }
   if (v > proValue && risky)
-    return { ...base, headline: 'Risky pass', detail: `${ran}Worth more than the pro’s on paper${risky}. ${bestDesc} ${where} was the best option – ${hint}.`, tone: 'ok' }
+    return { ...base, headline: 'Risky pass', detail: `${ran}Worth more than the pro’s on paper${risky}. ${bestDesc} ${where} was the best option – ${hint}.${proNote}`, tone: 'ok' }
   if (v > proValue)
-    return { ...base, headline: 'Better than the pro!', detail: `${ran}${bestDesc} ${where} was even better – ${hint}.`, tone: 'great' }
+    return { ...base, headline: 'Better than the pro!', detail: `${ran}${bestDesc} ${where} was even better – ${hint}.${proNote}`, tone: 'great' }
   return {
     ...base,
     headline: space ? (partial.decision >= MODEL.feedback.goodDecision ? 'Good pass into space' : `#${tr.nums[space.takerIdx]} got there`) : `${bestDesc} ${where} was the best option`,
-    detail: `${ran}${space ? `${bestDesc} ${where} was the best option – ${hint}.` : `${cap(hint)}.`}${proIsBest ? ' The pro found it.' : ` ${proLine}`}`,
+    detail: `${ran}${space ? `${bestDesc} ${where} was the best option – ${hint}.` : `${cap(hint)}.`}${proAsGood ? proNote : ` ${proLine}`}`,
     tone: space && partial.decision >= MODEL.feedback.goodDecision ? 'great' : space || partial.decision >= MODEL.feedback.okDecision ? 'ok' : 'bad',
   }
 }

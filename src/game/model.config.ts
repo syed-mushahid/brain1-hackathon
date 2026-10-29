@@ -106,6 +106,10 @@ export const MODEL = {
     /** lofted candidates (to feet and into space) are searched from this length (m): a shorter 30° chip never
      *  gets above flight.reachZ, so it is only slower than the ground pass */
     loftMinM: 15,
+    /** a pass (the pro's or yours) within this many points of the best option is "as good as the best": the
+     *  result shows it as the best (no separate best arrow, "the pro found it"). Presentation only: the
+     *  Decision score is unchanged [GAME] */
+    asGoodPoints: 5,
     /** two passes are the same when they reach the same player within this distance (m), with the same flight... */
     samePassM: 5,
     /** ...and score within this many points of each other */

@@ -17,7 +17,11 @@
 //     pro's real pass);
 //   - lofted passes are lofted where the ball height says so (the pro's: measured height, else
 //     > loftFrom; yours: a double tap), and a single tap always plays along the ground;
-//   - tapping the best option (double-tapping it when it is lofted) gives "the best option".
+//   - tapping the best option (double-tapping it when it is lofted) gives "the best option";
+//   - when the pro's pass is as good as the best (best.ts isProAsGoodAsBest), no tap's result implies
+//     he missed it: no separate best arrow or Best column, the pro's column says "= best", every
+//     text that mentions the best option (or "The pro played") acknowledges the pro, and the scan tab
+//     says the pro chose it.
 // Exit code 1 when any moment fails. extract_moments.py runs this on every candidate (--json) and
 // only keeps the moments that pass.
 import fs from 'node:fs'
@@ -25,7 +29,7 @@ import path from 'node:path'
 import { validateMoment, validatePlay } from '../src/data/validate'
 import type { MomentData, Play } from '../src/types'
 import { buildTrack, PITCH_L, PITCH_W, posAt, toPortrait, idxOf, type Track } from '../src/game/track'
-import { findBestPass, findBravePass, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
+import { findBestPass, findBravePass, isProAsGoodAsBest, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
 import { difficultyParts } from '../src/game/difficulty'
 import { evaluate, type RoundResult } from '../src/game/evaluate'
 import { flight, optionAt, RACE } from '../src/game/space'
@@ -130,6 +134,24 @@ function checkTap(tr: Track, kind: string, tap: [number, number], problems: stri
     const named = line?.match(/where (#\d+) would be/)?.[1]
     if (line && named !== want) problems.push(`${tag}: memory names ${named}, but ${want} received the pass`)
   }
+  // the pro's pass as good as the best: nothing may suggest he missed the best option
+  if (isProAsGoodAsBest(tr)) {
+    if (!r.proAsGood) problems.push(`${tag}: the result doesn't treat the pro's pass as good as the best`)
+    if (r.best.alone) problems.push(`${tag}: draws a separate best arrow although the pro's pass is as good as the best`)
+    const implies = /best option|best pass|was open|was better than|was even better|The pro played/i
+    const ack = /found it|you and the pro|same as the pro|chose|just as good|as good as|as good a choice|equally good|– the best pass –|= best/i
+    const groups: [string, string][] = [
+      ['headline/detail', `${r.headline} ${r.detail}`],
+      ['Why?', [r.breakdown.why.title, ...r.breakdown.why.points.filter((p) => !p.startsWith('Brave option:'))].join(' | ')],
+    ]
+    for (const [g, text] of groups)
+      if (implies.test(text) && !ack.test(text)) problems.push(`${tag}: ${g} implies the pro missed the best option: "${text.slice(0, 160)}"`)
+    if (!/The pro chose/.test(r.breakdown.scan.lines.join(' '))) problems.push(`${tag}: Your scan doesn't say the pro chose the best option`)
+    const cols = r.breakdown.why.cols
+    if (cols.some((c) => c.tone === 'best')) problems.push(`${tag}: the Why? table has a separate Best column`)
+    const proCol = cols.find((c) => c.tone === 'pro') ?? cols.find((c) => /= pro/.test(c.label))
+    if (proCol && !/best/i.test(proCol.label)) problems.push(`${tag}: the pro's column "${proCol.label}" isn't labelled as the best`)
+  }
   const made = madePass(tr, r)
   if (made && !made.asPro) {
     // outcome = chance to arrive
@@ -156,6 +178,8 @@ interface MomentReport {
     best: { pid: string; num: number; intoSpace: boolean; lofted: boolean; direction: string; p: number; value: number; end: { x: number; y: number } }
     brave: { pid: string; intoSpace: boolean; p: number; value: number } | null
     proIsBest: boolean
+    /** the pro's pass is as good as the best (within best.asGoodPoints) */
+    proAsGood: boolean
     /** the pro's pass valued as a decision (null: no teammate to value it for) */
     proValue: number | null
     /** the pro's pass among the model's ranked options (1 = the best); null when it can't be valued */
@@ -307,6 +331,7 @@ function checkMoment(file: string): MomentReport {
     },
     brave: brave ? { pid: brave.o.pid, intoSpace: brave.intoSpace, p: +(brave.o.p ?? 1).toFixed(3), value: brave.o.value } : null,
     proIsBest: rb.proIsBest,
+    proAsGood: isProAsGoodAsBest(tr),
     proValue: proCol?.value ?? null,
     proRank: (() => {
       if (!proCol) return null
@@ -352,6 +377,7 @@ const summary = {
   taps: reports.reduce((a, r) => a + (r.taps?.length ?? 0), 0),
   difficulty: count(good.map((r) => r.difficulty!)),
   proIsBest: good.filter((r) => r.stats!.proIsBest).length,
+  proAsGood: good.filter((r) => r.stats!.proAsGood).length,
   /** the fit target of value.k: the pro's pass within 5 points of the best */
   proWithin5: good.filter((r) => r.stats!.proValue !== null && r.stats!.proValue >= r.stats!.best.value - 5).length,
   proValued: good.filter((r) => r.stats!.proValue !== null).length,
@@ -381,6 +407,7 @@ if (!quiet) {
       `  passed ${good.length}, failed ${bad.length}${manifest.length ? `, manifest problems ${manifest.length}` : ''}`,
       `  difficulty (game model): ${['easy', 'medium', 'hard'].map((d) => `${d} ${summary.difficulty[d] ?? 0}`).join(' / ')}`,
       `  pro = best (same pass): ${share(summary.proIsBest)}; pro within 5 points of the best: ${summary.proWithin5}/${summary.proValued} (${Math.round((100 * summary.proWithin5) / (summary.proValued || 1))}%)`,
+      `  pro's pass as good as the best (shown as the best): ${share(summary.proAsGood)}`,
       `  pro's pass in the model's top 3: ${summary.proTop3}/${summary.proValued} (${Math.round((100 * summary.proTop3) / (summary.proValued || 1))}%)`,
       `  best option into space: ${share(summary.bestIntoSpace)}; lofted: ${share(summary.bestLofted)}; pro's pass into space: ${share(summary.proIntoSpace)}`,
       `  pro's pass lofted: ${share(summary.proLofted)}; brave option shown: ${share(summary.brave)}`,

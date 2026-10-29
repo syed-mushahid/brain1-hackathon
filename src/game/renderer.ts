@@ -27,7 +27,7 @@ export interface RevealDraw {
   bestIdx: number
   /** the best pass: its end (a teammate's feet or a spot in space), his run there, and whether it gets
    *  its own arrow (alone = not the same as your pass or the pro's; otherwise only the dashed ring) */
-  best: { end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean }
+  best: { end: [number, number]; run: [number, number][] | null; alone: boolean; lofted: boolean; ring: [number, number] }
   /** lofted passes are drawn as curved arrows: yours (double tap), the pro's (measured height) */
   mineLofted: boolean
   proLofted: boolean
@@ -437,9 +437,10 @@ export class PitchRenderer {
       ctx.fillText('offside line', lx, ly)
       ctx.globalAlpha = 1
     }
-    // best option (dashed white ring; its own dashed arrow only when nobody played it)
+    // best option: a dashed white ring - on your pass or the pro's when that is as good as the best -
+    // and its own dashed arrow only when neither is
     const [be, bf] = R.best.end
-    this.ring(be, bf, C.best, true)
+    this.ring(R.best.ring[0], R.best.ring[1], C.best, true)
     if (R.best.alone) {
       this.arrow(yu, yv, be, bf, C.best, p, true, R.best.lofted)
       if (R.best.run) this.run(R.best.run, C.best, Math.max(0, Math.min(1, (p - 0.45) / 0.55)))

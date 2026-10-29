@@ -72,6 +72,64 @@ export const rankValue = (c: { o: { value: number }; intoSpace: boolean }) => c.
  */
 export const rankedPasses = (tr: Track): BestPass[] => choose(tr).ranked
 
+/** The pro's real pass, judged like yours. */
+export interface ProPass {
+  /** who it went to: the teammate who ran onto it, else the one it was meant for */
+  idx: number
+  /** where it ended, for "same pass" (where it was collected; the receiver for a pass to feet that was lost) */
+  end: [number, number]
+  /** where its "best" ring goes when it is as good as the best: the spot in space, or the receiver */
+  ring: [number, number]
+  intoSpace: boolean
+  /** measured flight (facts.ts proLofted) */
+  lofted: boolean
+  /** valued as a decision, like your pass (whatever happened to it); null = no teammate to value it for */
+  o: PassOption | null
+}
+const proCache = new WeakMap<Track, ProPass | null>()
+
+/**
+ * The pro's real pass: to a teammate's feet, or into space when the receiver had to run onto it (then
+ * it is valued at the spot he collected it, not where he stood), with its measured flight.
+ */
+export function proPassOf(tr: Track): ProPass | null {
+  if (proCache.has(tr)) return proCache.get(tr)!
+  const m = tr.m
+  const tk = m.actual.taker
+  const takerIdx = tk ? idxOf(tr, tk.pid) : -1
+  const proPid = m.actual.intended_pid ?? m.actual.target_pid
+  const proIdx = idxOf(tr, proPid)
+  const end = toPortrait(m.actual.end.x, m.actual.end.y)
+  const received = m.actual.outcome === 'received' && takerIdx >= 0
+  const intoSpace =
+    received && Math.hypot(end[0] - posAt(tr, tr.rec, takerIdx)[0], end[1] - posAt(tr, tr.rec, takerIdx)[1]) >= MODEL.best.samePassM
+  const lofted = proLofted(m)
+  const idx = received ? takerIdx : proIdx
+  let out: ProPass | null = null
+  if (idx >= 0) {
+    const at = posAt(tr, tr.rec, idx)
+    const o = intoSpace
+      ? optionAt(tr, takerIdx, end, undefined, RACE, lofted)
+      : lofted && proIdx >= 0
+        ? optionAt(tr, proIdx, posAt(tr, tr.rec, proIdx), undefined, RACE, true)
+        : (scoredOptions(tr).find((x) => x.pid === proPid) ?? null)
+    out = { idx, end: received ? end : at, ring: intoSpace ? end : at, intoSpace, lofted, o }
+  }
+  proCache.set(tr, out)
+  return out
+}
+
+/** A pass worth this much is as good as the best option (within best.asGoodPoints). */
+export const asGoodAsBest = (tr: Track, value: number | null | undefined) =>
+  value !== null && value !== undefined && value >= findBestPass(tr).o.value - MODEL.best.asGoodPoints
+
+/**
+ * The pro's pass was as good as the best option: within best.asGoodPoints of it - whether it is the same
+ * pass, goes to the same receiver another way (lofted, into space) or to someone else. The result then
+ * never suggests he missed the best option.
+ */
+export const isProAsGoodAsBest = (tr: Track): boolean => asGoodAsBest(tr, proPassOf(tr)?.o?.value)
+
 function choose(tr: Track): Choice {
   const hit = cache.get(tr)
   if (hit) return hit
