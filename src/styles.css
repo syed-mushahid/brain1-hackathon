@@ -148,6 +148,14 @@ button {
   touch-action: none;
 }
 
+.round.phase-reveal .pitch-wrap {
+  cursor: grab; /* drag to look around, double-click to recentre */
+}
+
+.round.phase-reveal .pitch-wrap:active {
+  cursor: grabbing;
+}
+
 .pitch {
   display: block;
   border-radius: 12px;

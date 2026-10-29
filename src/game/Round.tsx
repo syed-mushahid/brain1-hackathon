@@ -68,6 +68,9 @@ interface Api {
   ready: () => void
   /** play the real frames (reception -> pass -> takeover) on the pitch */
   replay: (played: Track, kick: number, take: number) => void
+  /** reveal: drag the pitch by (dx, dy) css px; recenter = back to the automatic framing */
+  panBy: (dx: number, dy: number) => void
+  recenter: () => void
   stopReplay: () => void
 }
 
@@ -91,6 +94,8 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
   }
   const api = useRef<Api | null>(null)
   const pitchAim = useRef(false) // a finger is aiming on the pitch
+  const drag = useRef<{ x: number; y: number } | null>(null) // reveal: dragging the pitch around
+  const lastDown = useRef(0) // reveal: a double tap on the pitch recentres it
   // shared with the 3D view in Pro mode
   const clock = useRef<Clock>({ f: 0, rate: 0, highlight: false })
   const onResultRef = useRef(onResult)
@@ -123,6 +128,8 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
+      // reveal / replay: how far the player dragged the pitch (css px), on top of the automatic framing
+      pan: { x: 0, y: 0 },
       // the decision: a first tap waits taps.doubleTapMs for a second one (double tap = lofted pass)
       pending: null as null | { q: [number, number]; at: number; timer: ReturnType<typeof setTimeout> },
     }
@@ -196,7 +203,8 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
     /** The box that matters at the reveal, fitted into the canvas area not covered by the sheet. */
     const revealView = (R: RevealDraw): View => {
       const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), R.proEnd]
-      if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end)
+      if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, ...(R.best.alone ? (R.best.run ?? []) : []))
+      if (R.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
       if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
       if (R.tap) pts.push(R.tap)
       if (R.run) pts.push(...R.run.pts)
@@ -204,14 +212,18 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       const us = pts.map((p) => p[0])
       const vs = pts.map((p) => p[1])
       const visibleH = visibleHeight()
-      return r.fitView(
-        Math.min(...us) - FRAME_MARGIN_M,
-        Math.min(...vs) - FRAME_MARGIN_M,
-        Math.max(...us) + FRAME_MARGIN_M,
-        Math.max(...vs) + FRAME_MARGIN_M,
-        visibleH,
+      return withPan(
+        r.fitView(
+          Math.min(...us) - FRAME_MARGIN_M,
+          Math.min(...vs) - FRAME_MARGIN_M,
+          Math.max(...us) + FRAME_MARGIN_M,
+          Math.max(...vs) + FRAME_MARGIN_M,
+          visibleH,
+        ),
       )
     }
+    /** the automatic framing moved by the player's drag */
+    const withPan = (v: View): View => ({ k: v.k, tx: v.tx + g.pan.x, ty: v.ty + g.pan.y })
     const bestInCone = (dir: number) =>
       bestIdx >= 0 &&
       coneVis(pos[bestIdx * 2], pos[bestIdx * 2 + 1], pos[track.youIdx * 2], pos[track.youIdx * 2 + 1], dir) > 0.5
@@ -262,6 +274,21 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         // a single tap is a ground pass - once it is clear no second tap is coming
         g.pending = { q, at: now, timer: setTimeout(() => g.pending && finish(g.pending.q, performance.now()), T.doubleTapMs) }
         vibrate(8)
+      },
+      panBy(dx, dy) {
+        if (g.phase !== 'reveal') return
+        // keep at least part of the pitch on screen
+        const lim = (x: number, m: number) => Math.max(-m, Math.min(m, x))
+        const x = lim(g.pan.x + dx, r.w * 0.8)
+        const y = lim(g.pan.y + dy, r.h * 0.8)
+        g.view.tx += x - g.pan.x // follow the finger directly, no easing
+        g.view.ty += y - g.pan.y
+        g.pan = { x, y }
+        g.settled = false
+      },
+      recenter() {
+        g.pan = { x: 0, y: 0 }
+        g.settled = false
       },
       ready() {
         if (g.waitFor3D) {
@@ -383,9 +410,10 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         }
         const v = g.view
         const a = 1 - Math.exp(-dt / 160)
-        v.k += (P.view.k - v.k) * a
-        v.tx += (P.view.tx - v.tx) * a
-        v.ty += (P.view.ty - v.ty) * a
+        const t = withPan(P.view)
+        v.k += (t.k - v.k) * a
+        v.tx += (t.tx - v.tx) * a
+        v.ty += (t.ty - v.ty) * a
         r.draw({ mode: 'reveal', pos, ball, headDir: 0, look: 0, decideLeft: 1, reveal: null, view: v, blend: 1, time: now, top: g.top })
         return
       }
@@ -461,12 +489,22 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       a.lookStart(a.dirToPoint(e.clientX, e.clientY))
     } else if (phase === 'decide') {
       api.current?.tap(e.clientX, e.clientY)
+    } else if (phase === 'reveal') {
+      e.currentTarget.setPointerCapture(e.pointerId)
+      drag.current = { x: e.clientX, y: e.clientY }
+      if (e.timeStamp - lastDown.current < MODEL.taps.doubleTapMs) api.current?.recenter()
+      lastDown.current = e.timeStamp
     }
   }
   const onPitchMove = (e: RPointerEvent) => {
+    if (drag.current) {
+      api.current?.panBy(e.clientX - drag.current.x, e.clientY - drag.current.y)
+      drag.current = { x: e.clientX, y: e.clientY }
+    }
     if (pitchAim.current && api.current) api.current.lookMove(api.current.dirToPoint(e.clientX, e.clientY))
   }
   const onPitchUp = () => {
+    drag.current = null
     if (!pitchAim.current) return
     pitchAim.current = false
     api.current?.lookEnd()
