@@ -20,9 +20,9 @@ const signed = (x: number) => `${x > 0 ? '+' : x < 0 ? '−' : ''}${Math.abs(Mat
 /** Table rows: label, cell text, number used to mark the best cell (higher = better), or null = no marking. */
 const ROWS: [string, (o: PassOption) => string, ((o: PassOption) => number) | null][] = [
   ['Pass value', (o) => String(Math.round(o.value)), (o) => o.value],
+  ['Chance to arrive', (o) => `${Math.round((o.p ?? 1) * 100)}%`, (o) => o.p ?? 1],
+  ['Goal chance there', (o) => `${((o.epv ?? 0) * 100).toFixed(1)}%`, (o) => o.epv ?? 0],
   ['Forward', (o) => signed(o.progress), (o) => o.progress],
-  ['Lane open', (o) => `${o.lane_open >= 30 ? '30+' : o.lane_open} m`, (o) => o.lane_open], // 30 = no defender ahead
-  ['Space', (o) => `${o.receiver_space} m`, (o) => o.receiver_space],
   ['Distance', (o) => `${Math.round(o.dist)} m`, null],
 ]
 
@@ -75,10 +75,6 @@ function Why({ w }: { w: WhyInfo }) {
           </tr>
         </tbody>
       </table>
-      <div className="fine">
-        Pass value = 50% forward progress + 30% open lane (distance from the ball’s path to the nearest defender) + 20%
-        space around the receiver. A lane under 2 m counts as blocked.
-      </div>
       {w.note && <div className="fine">{w.note}</div>}
     </>
   )

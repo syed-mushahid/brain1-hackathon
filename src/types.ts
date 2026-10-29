@@ -29,7 +29,13 @@ export interface PassOption {
   direction: Direction
   /** beyond the offside line when you would pass (value is then 0) */
   offside?: boolean
+  /** moments.json: the old heuristic (used to select the moments); in the game: the expected value
+   *  of the pass on a 0-100 scale (game/value.ts) */
   value: number
+  /** game only: P(the pass reaches your team), EPV where it is won, raw expected value */
+  p?: number
+  epv?: number
+  ev?: number
 }
 
 export interface Moment {

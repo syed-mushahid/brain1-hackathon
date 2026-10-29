@@ -13,6 +13,10 @@
 // should name the player who really won the ball (see RACE).
 import type { PassOption, Team } from '../types'
 import { FPS, PITCH_L, PITCH_W, posAt, type Track } from './track'
+import { passEV } from './value'
+
+/** race margin used when no opponent can get near the pass at all (P(success) ~ 1) */
+export const NO_OPPONENT_S = 3
 
 export interface RaceParams {
   ballSpeed: number // m/s
@@ -29,32 +33,6 @@ export const RACE: RaceParams = { ballSpeed: 15, loftFrom: 30, react: 0.5, react
 const LOFT_LANDING = 0.2
 const STEP_M = 0.5
 const START_M = 1.5 // the first metre and a half is still at your feet
-
-// Same option value as extract_moments.py (VALUE_PARAMS / option_value)
-const V = {
-  wLane: 0.3,
-  wProgress: 0.5,
-  wSpace: 0.2,
-  laneFull: 5,
-  laneBlock: 2,
-  spaceFull: 6,
-  progMin: -10,
-  progMax: 25,
-  longFrom: 25,
-  longPerM: 0.5,
-  longMax: 15,
-}
-const clip01 = (x: number) => Math.max(0, Math.min(1, x))
-
-export function optionValue(dist: number, laneOpen: number, progress: number, space: number): number {
-  const base =
-    100 *
-    (V.wLane * clip01(laneOpen / V.laneFull) +
-      V.wProgress * clip01((progress - V.progMin) / (V.progMax - V.progMin)) +
-      V.wSpace * clip01(space / V.spaceFull))
-  const penalty = Math.min(V.longMax, V.longPerM * Math.max(0, dist - V.longFrom))
-  return Math.max(0, Math.min(100, base * clip01(laneOpen / V.laneBlock) - penalty))
-}
 
 /** Distance from the nearest defender ahead of the passer to the pass line (capped at 30 m). */
 function laneOpen(a: [number, number], b: [number, number], defs: [number, number][]): number {
@@ -175,7 +153,8 @@ export function arrivalTime(tr: Track, idx: number, end: [number, number], P: Ra
   return Math.max(Math.hypot(end[0] - you[0], end[1] - you[1]) / P.ballSpeed, timeTo(idx, end))
 }
 
-/** A pass to `end`, collected there by teammate `idx` at time tWin, scored like a normal option. */
+/** A pass to `end`, collected there by teammate `idx` at time tWin, valued by its expected value
+ *  (value.ts). dist / progress / lane / space are kept as plain facts for the Why? table. */
 export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: number, P: RaceParams = RACE): PassOption {
   const { you, timeTo } = race(tr, P)
   const dist = Math.hypot(end[0] - you[0], end[1] - you[1])
@@ -192,6 +171,7 @@ export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: n
   const k = dist > P.loftFrom ? 1 - LOFT_LANDING : 0
   const lane = laneOpen([you[0] + (end[0] - you[0]) * k, you[1] + (end[1] - you[1]) * k], end, defs)
   const space = Math.min(30, Math.max(0, nearest) * P.runSpeed) // that head start, in metres of running
+  const ev = passEV(you, end, passRisk(tr, end, t, P)?.slack ?? NO_OPPONENT_S)
   const r1 = (x: number) => Math.round(x * 10) / 10
   return {
     pid: tr.pids[idx],
@@ -201,7 +181,10 @@ export function optionAt(tr: Track, idx: number, end: [number, number], tWin?: n
     progress: r1(progress),
     receiver_space: r1(space),
     direction: progress >= 3 && progress >= dist / 2 ? 'forward' : progress <= -3 && -progress >= dist / 2 ? 'backward' : 'sideways',
-    value: r1(optionValue(dist, lane, progress, space)),
+    value: ev.points,
+    p: ev.p,
+    epv: ev.epvTarget,
+    ev: ev.ev,
   }
 }
 

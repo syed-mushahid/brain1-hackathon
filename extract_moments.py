@@ -828,6 +828,12 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
         _pressured=(mates_35 >= PREF_MIN_TEAMMATES and pressure <= PREF_PRESSURE_RADIUS_M),
         _t=p1.timestamp.total_seconds() + per * 10000,
         _sync=(kick1 - i1, kick2 - i2),
+        # the state at the moment pass 2 is played, for calibrate_pass_model.py (pass success model)
+        _calib=dict(pos=[norm(xy[kick2, c]) for c in cols], prev=[norm(xy[max(0, kick2 - 5), c]) for c in cols],
+                    att=[bool(tr.teams[c] == team) for c in cols], passer=cols.index(cb),
+                    taker=cols.index(take_col) if take_col is not None and take_col in cols else None,
+                    take_pos=take_pos,
+                    intended=next((k for k, c in enumerate(cols) if pid_of(c) == intended), None)),
         _play=dict(frames=play, kick_index=round((kick2 - rec) / step, 1),
                    take_index=round((take_k - rec) / step, 1)),
         _final=dict(options=final, best_option_pid=final[0]['pid'], pro_was_best=(intended == final[0]['pid']),
@@ -1100,6 +1106,15 @@ def main():
             value_formula=option_value.__doc__.strip(),
             value_params=VALUE_PARAMS,
             forward_first_rule=apply_forward_first.__doc__.strip(),
+            game_value_model=dict(
+                note='options[].value / best_option_pid here are the heuristic used to SELECT moments. The game '
+                     'values every pass by expected value instead (src/game/value.ts): EV = P(success) * '
+                     '(EPV(target) - EPV(ball)) - (1 - P(success)) * EPV_opponent(target), shown on 0-100.',
+                p_success='Spearman-style logistic of the race margin (src/game/space.ts), bias 1.0 s, sigma 0.95 s, '
+                          'fitted on 991 real DFL passes (calibrate_pass_model.py, pass_model_calibration.json)',
+                epv_source='Expected Possession Value grid by Laurie Shaw, LaurieOnTracking '
+                           '(https://github.com/Friends-of-Tracking-Data-FoTD/LaurieOnTracking, EPV_grid.csv)',
+                epv_licence='MIT License, Copyright (c) 2021 Friends-of-Tracking-Data-FoTD (full text in src/game/epvGrid.ts)'),
             offside_rule=offside_line.__doc__.strip() + f' (OFFSIDE_TOL_M = {OFFSIDE_TOL_M}). An offside option has value 0.',
             direction_rule=pass_direction.__doc__.strip(),
             difficulty_rule=difficulty.__doc__.strip(),

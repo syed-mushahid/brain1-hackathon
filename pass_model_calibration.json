@@ -1,0 +1,14 @@
+{
+ "n": 991,
+ "completed": 868,
+ "lost": 123,
+ "base_rate": 0.876,
+ "logloss_base_rate": 0.375,
+ "logloss_spearman_sigma045": 0.537,
+ "spearman_sigma045_best_bias": 0.55,
+ "logloss_spearman_best_bias": 0.351,
+ "fit_bias_s": 1.0,
+ "fit_sigma_s": 0.95,
+ "logloss_fit": 0.299,
+ "auc_slack": 0.859
+}

@@ -1,13 +1,13 @@
-// The best pass in a moment. moments.json only knows passes to a teammate's feet; a ball into the
-// space a teammate can run onto can be better, so this also tries:
-//   - the pro's real through ball (it really worked), and
-//   - a ring of spots around every onside teammate, raced with the race model (space.ts);
-//     a spot only counts when the receiver wins it clearly (BEST_MARGIN_S) and the pass is not
-//     high-risk, so the "best option" is never a gamble.
-// A pass into space must beat the best pass to feet by BEST_SPACE_GAIN to replace it.
+// Options and the best pass in a moment, valued by expected value (value.ts).
+//   scoredOptions: every pass to a teammate's feet (from moments.json), re-valued; offside = 0.
+//   findBestPass:  the best of those, the pro's real through ball, and a ring of spots around every
+//                  onside teammate raced with the race model (space.ts). The risk is inside the value
+//                  (P(success)), so no extra margin or risk filter: a pass into space only has to beat
+//                  the best pass to feet by BEST_SPACE_GAIN points.
 import type { PassOption } from '../types'
 import { FPS, idxOf, PITCH_L, PITCH_W, posAt, toPortrait, type Track } from './track'
-import { arrivalTime, offsideBy, offsideLineV, optionAt, passRisk, riskLevel, simulateSpacePass } from './space'
+import { arrivalTime, NO_OPPONENT_S, offsideBy, offsideLineV, optionAt, passRisk, simulateSpacePass } from './space'
+import { passEV } from './value'
 
 export interface BestPass {
   o: PassOption
@@ -21,8 +21,7 @@ export interface BestPass {
   t: number
 }
 
-const BEST_MARGIN_S = 0.5
-const BEST_SPACE_GAIN = 3
+const BEST_SPACE_GAIN = 2
 const RINGS_M = [4, 8, 12]
 const DIRS = 8
 /** two passes are the same when they go to the same player and end within this distance */
@@ -33,6 +32,24 @@ export const SAME_VALUE = 5
 export const samePass = (a: { idx: number; end: [number, number] }, b: { idx: number; end: [number, number] }) =>
   a.idx === b.idx && Math.hypot(a.end[0] - b.end[0], a.end[1] - b.end[1]) <= SAME_PASS_M
 
+const optCache = new WeakMap<Track, PassOption[]>()
+
+/** Every pass to a teammate's feet, valued by expected value, best first. Offside options are 0. */
+export function scoredOptions(tr: Track): PassOption[] {
+  const hit = optCache.get(tr)
+  if (hit) return hit
+  const you = posAt(tr, tr.rec, tr.youIdx)
+  const out = tr.m.options
+    .map((o): PassOption => {
+      const target = posAt(tr, tr.rec, idxOf(tr, o.pid))
+      const e = passEV(you, target, passRisk(tr, target)?.slack ?? NO_OPPONENT_S)
+      return { ...o, value: o.offside ? 0 : e.points, p: e.p, epv: e.epvTarget, ev: e.ev }
+    })
+    .sort((a, b) => b.value - a.value)
+  optCache.set(tr, out)
+  return out
+}
+
 const cache = new WeakMap<Track, BestPass>()
 
 export function findBestPass(tr: Track): BestPass {
@@ -40,13 +57,12 @@ export function findBestPass(tr: Track): BestPass {
   if (hit) return hit
   const m = tr.m
   const f = tr.rec
-  const feetIdx = idxOf(tr, m.best_option_pid)
-  const feetOpt = m.options.find((o) => o.pid === m.best_option_pid)!
-  const feetEnd = posAt(tr, f, feetIdx)
-  let best: BestPass = { o: feetOpt, idx: feetIdx, intoSpace: false, end: feetEnd, run: null, t: 0 }
-  const beats = (v: number) => v >= Math.max(best.o.value, feetOpt.value + BEST_SPACE_GAIN)
+  const feetOpt = scoredOptions(tr)[0]
+  const feetIdx = idxOf(tr, feetOpt.pid)
+  let best: BestPass = { o: feetOpt, idx: feetIdx, intoSpace: false, end: posAt(tr, f, feetIdx), run: null, t: 0 }
+  const beats = (v: number) => v > best.o.value && v >= feetOpt.value + BEST_SPACE_GAIN
 
-  // the pro's real through ball: it worked, so no race needed
+  // the pro's real through ball (it really happened, so it is always a candidate)
   const tk = m.actual.taker
   let proPass: BestPass | null = null
   if (m.actual.outcome === 'received' && tk) {
@@ -61,7 +77,6 @@ export function findBestPass(tr: Track): BestPass {
 
   // spots around every onside teammate
   const lineV = offsideLineV(tr)
-  const found: BestPass[] = []
   for (let i = 0; i < tr.n; i++) {
     if (!tr.att[i] || i === tr.youIdx || offsideBy(tr, i, lineV) > 0) continue
     const p = posAt(tr, f, i)
@@ -73,16 +88,8 @@ export function findBestPass(tr: Track): BestPass {
       if (q[0] < 1 || q[0] > PITCH_W - 1 || q[1] < 1 || q[1] > PITCH_L - 1) continue
       if (Math.hypot(q[0] - p[0], q[1] - p[1]) < SAME_PASS_M - 1) continue // that's a pass to his feet
       const o = simulateSpacePass(tr, q)
-      if (!o.option || o.offside || o.margin < BEST_MARGIN_S || !beats(o.option.value)) continue
-      found.push({ o: o.option, idx: o.takerIdx, intoSpace: true, end: o.end, run: o.run, t: o.t })
-    }
-  }
-  found.sort((x, y) => y.o.value - x.o.value)
-  for (const c of found.slice(0, 6)) {
-    const r = passRisk(tr, c.end, c.t)
-    if (!r || riskLevel(r.slack) !== 'high') {
-      if (beats(c.o.value) && c.o.value > best.o.value) best = c
-      break
+      if (!o.option || o.offside || !beats(o.option.value)) continue
+      best = { o: o.option, idx: o.takerIdx, intoSpace: true, end: o.end, run: o.run, t: o.t }
     }
   }
   // a model spot that is really the pro's pass (same receiver, a few metres off, about the same

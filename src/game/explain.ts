@@ -4,8 +4,8 @@
 import type { Moment, PassOption, Team } from '../types'
 import { FPS, idxOf, posAt, type Track } from './track'
 import { scanParts } from './scoring'
-import type { BestPass } from './best'
-import { gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, passRisk, RACE, RISK_HIGH_S, RISK_MEDIUM_S, riskLevel, type Risk, type SpaceOutcome } from './space'
+import { scoredOptions, type BestPass } from './best'
+import { gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, passRisk, RACE, riskLevel, type Risk, type SpaceOutcome } from './space'
 import { lookWord, RECENT_SCAN_S, whereIs, type ScanRecord } from './vision'
 
 export interface CompareCol {
@@ -65,38 +65,37 @@ export interface Breakdown {
   match: MatchInfo
 }
 
-const clip = (x: number) => Math.max(0, Math.min(1, x))
 const metres = (x: number) => `${Math.round(Math.abs(x))} m`
 
-/** Points each part of the value formula gives an option (see option_value in extract_moments.py). */
-function parts(o: PassOption) {
-  return { forward: 50 * clip((o.progress + 10) / 35), lane: 30 * clip(o.lane_open / 5), space: 20 * clip(o.receiver_space / 6) }
-}
+const pct = (p: number) => `${Math.round(p * 100)}%`
+const goalPct = (epv: number) => `${(epv * 100).toFixed(1)}%`
 
-/** Why pass a beats pass b, most important reason first. Names are noun phrases ("your pass to #8"). */
+/**
+ * Why pass a beats pass b, most important reason first, in the terms of the expected-value model
+ * (value.ts): how likely it is to arrive, and how dangerous the spot is. Names are noun phrases
+ * ("your pass to #8").
+ */
 export function reasons(a: PassOption, aName: string, b: PassOption, bName: string): string[] {
   const out: [number, string][] = []
   if (b.offside && !a.offside) out.push([999, `${bName} went to a player in an offside position`])
-  const pa = parts(a)
-  const pb = parts(b)
-  if (b.lane_open < 2 && a.lane_open >= 2)
-    out.push([99, `The lane for ${bName} was almost blocked – a defender was ${b.lane_open} m from the ball’s path`])
-  else if (pa.lane - pb.lane >= 3)
-    out.push([pa.lane - pb.lane, `${aName} had a clearer lane (${a.lane_open} m vs ${b.lane_open} m to the nearest defender)`])
-  if (pa.forward - pb.forward >= 3) out.push([pa.forward - pb.forward, `${aName} went ${metres(a.progress - b.progress)} further forward`])
-  if (pa.space - pb.space >= 3)
-    out.push([pa.space - pb.space, `${aName} left the receiver more space (${a.receiver_space} m vs ${b.receiver_space} m)`])
-  if (b.direction === 'backward' && a.direction !== 'backward' && a.lane_open >= 2)
-    out.push([5, `${bName} went backward while a forward pass was on`])
-  if (b.dist > 25 && a.dist < b.dist - 5) out.push([4, `${aName} was shorter and safer (${a.dist} m vs ${b.dist} m)`])
-  if (out.length === 0) out.push([0, `${aName} scored a little higher overall (${a.value} vs ${b.value})`])
-  return out.sort((x, y) => y[0] - x[0]).map((x) => x[1])
+  const pa = a.p ?? 1
+  const pb = b.p ?? 1
+  const ea = a.epv ?? 0
+  const eb = b.epv ?? 0
+  if (pa - pb >= 0.05) out.push([(pa - pb) * 100, `${aName} was safer: ${pct(pa)} vs ${pct(pb)} chance to reach a teammate`])
+  if (ea - eb >= 0.003)
+    out.push([(ea - eb) * 1500, `${aName} put the ball in a more dangerous spot: ${goalPct(ea)} vs ${goalPct(eb)} of attacks from there end in a goal`])
+  if (out.length === 0) out.push([0, `${aName} scored a little higher overall (${Math.round(a.value)} vs ${Math.round(b.value)})`])
+  const list = out.sort((x, y) => y[0] - x[0]).map((x) => x[1])
+  // be honest about the price: a better pass can still be the riskier one
+  if (pb - pa >= 0.05) list.push(`Trade-off: ${aName} was riskier – ${pct(pa)} vs ${pct(pb)} chance to reach a teammate`)
+  return list
 }
 
 /** What made an option good on its own. */
 function strengths(o: PassOption, name: string): string {
   const fwd = o.progress >= 0 ? `${metres(o.progress)} forward` : `${metres(o.progress)} back`
-  return `${name}: ${fwd}, lane ${o.lane_open} m clear, ${o.receiver_space} m of space`
+  return `${name}: ${pct(o.p ?? 1)} chance to arrive, ${fwd}, ${goalPct(o.epv ?? 0)} of attacks from there end in a goal`
 }
 
 export function minuteLabel(m: Moment): string {
@@ -115,7 +114,7 @@ export function explain(
   facts: PassFacts,
 ): Breakdown {
   const m = tr.m
-  const opt = (pid: string | null) => m.options.find((o) => o.pid === pid) ?? null
+  const opt = (pid: string | null) => scoredOptions(tr).find((o) => o.pid === pid) ?? null
   const numOf = (pid: string | null) => {
     const i = idxOf(tr, pid)
     return i >= 0 ? tr.nums[i] : 0
@@ -214,10 +213,12 @@ export function explain(
     risks.push(`Offside when you passed: ${offside.join(', ')} beyond the offside line – a pass to them is a free kick for the opponents`)
   points.push(...risks, proLine)
   const note =
-    `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes: high = tighter than the tightest quarter of them (${RISK_HIGH_S} s), medium = up to ${RISK_MEDIUM_S} s, low = more room. ` +
-    `It comes from a race model: the ball travels at ${RACE.ballSpeed} m/s (passes over ${RACE.loftFrom} m are lofted and can only be reached as they land); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s – they expect the pass), then sprint at ${RACE.runSpeed} m/s from where they really were, and control the ball within ${RACE.reach} m. ` +
-    `Checked on the 30 real passes: it picks the team that won the ball in 25. Taps aren’t precise: a pass into space is also tried 2.5 m around your tap, and a tap within 5 m of where the pro’s pass was collected gets the real outcome. ` +
-    `The best pass can be into space: spots around every onside teammate are tried, and one counts when the receiver wins it by 0.5 s or more, it isn’t high-risk, and it beats the best pass to feet by 3+ points.`
+    `Pass value = expected value: P(it arrives) × (gain in goal chance) − P(it’s lost) × the opponents’ goal chance from that spot, on a 0–100 scale (70 = no change). ` +
+    `P comes from a race model, Spearman-style (2017): the ball travels at ${RACE.ballSpeed} m/s (over ${RACE.loftFrom} m it’s lofted); opponents keep running for ${RACE.react} s before they react (your teammates ${RACE.reactMates} s), then sprint at ${RACE.runSpeed} m/s; the margin becomes a probability with a logistic curve fitted on 991 real Bundesliga passes. ` +
+    `Goal chances: Expected Possession Value grid by Laurie Shaw (LaurieOnTracking, MIT licence). ` +
+    `Risk = how close the nearest opponent gets to the ball’s path, compared with the pros’ completed passes. ` +
+    `Taps aren’t precise: a pass into space is also tried 2.5 m around your tap, and a tap within 5 m of where the pro’s pass was collected gets the real outcome. ` +
+    `The best pass can be into space: spots around every onside teammate are tried.`
 
   const riskCell = (r: Risk | null): CompareCol['risk'] => {
     if (!r) return null

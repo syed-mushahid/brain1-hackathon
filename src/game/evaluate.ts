@@ -1,7 +1,7 @@
 import type { Team } from '../types'
 import { idxOf, posAt, toPortrait, type Track } from './track'
 import { explain, type Breakdown } from './explain'
-import { findBestPass, SAME_VALUE, samePass } from './best'
+import { findBestPass, SAME_VALUE, samePass, scoredOptions } from './best'
 import { arrivalTime, gap, offsideBy, offsideLineV, OFFSIDE_TOL_M, spaceMemory, optionAt, passRisk, riskLevel, simulateSpacePass, type Risk, type SpaceOutcome } from './space'
 import type { PassOption } from '../types'
 import { brainScore, decisionScore, memoryScore, scanScore, spaceMemoryScore, type Scores } from './scoring'
@@ -65,7 +65,9 @@ export function snap(tr: Track, tap: [number, number]): { idx: number; dist: num
 
 export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const m = tr.m
-  const valueOf = (pid: string | null) => m.options.find((o) => o.pid === pid)?.value ?? 0
+  // every option valued by expected value (best.ts / value.ts), not the heuristic in moments.json
+  const options = scoredOptions(tr)
+  const valueOf = (pid: string | null) => options.find((o) => o.pid === pid)?.value ?? 0
   // the best pass may be to a teammate's feet or into space (best.ts)
   const best = findBestPass(tr)
   const bestIdx = best.idx
@@ -104,7 +106,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const proEnd = toPortrait(m.actual.end.x, m.actual.end.y)
   const proIntoSpace =
     m.actual.outcome === 'received' && takerIdx >= 0 && Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= 5
-  const proOpt: PassOption | null = proIntoSpace ? optionAt(tr, takerIdx, proEnd) : (m.options.find((o) => o.pid === proPid) ?? null)
+  const proOpt: PassOption | null = proIntoSpace ? optionAt(tr, takerIdx, proEnd) : (options.find((o) => o.pid === proPid) ?? null)
   // for "better than the pro": a pro pass that was lost (intercepted / out) is worth nothing
   const proValue = m.actual.outcome === 'received' ? (proOpt?.value ?? 0) : 0
   // risk = the closest an opponent came to cutting the pass out (only for passes that got through)
@@ -166,7 +168,17 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
   const space: SpaceOutcome | null = input.tap && !toFeet ? readSpace(input.tap) : null
   const snapped = space ? { idx: -1, dist: Infinity } : near
   const tapDist = snapped.idx >= 0 ? snapped.dist : null
-  const chosenValue = snapped.idx >= 0 ? valueOf(tr.pids[snapped.idx]) : space?.option ? space.option.value : null
+  // an intercepted pass still had its chance: value it as a pass to your quickest teammate there
+  // (expected value: P(success) is low, so is the value); out of play / offside = nothing
+  const lostTo = space && space.team === 'def' && space.rivalIdx >= 0 && tr.att[space.rivalIdx] ? space.rivalIdx : -1
+  const chosenValue =
+    snapped.idx >= 0
+      ? valueOf(tr.pids[snapped.idx])
+      : space?.option
+        ? space.option.value
+        : lostTo >= 0
+          ? optionAt(tr, lostTo, space!.end).value
+          : null
   const myRisk: Risk | null = space
     ? space.team === 'att' && !space.offside
       ? passRisk(tr, space.end, space.t)
@@ -252,7 +264,7 @@ export function evaluate(tr: Track, input: RoundInput): RoundResult {
     if (space.team === 'def')
       return { ...base, headline: 'Intercepted!', detail: `${name(space.takerIdx)} got to your pass ${race}. ${bestLine}${proFound}`.replace(/^r/, 'R'), tone: 'bad' }
     ran = space.asPro ? `#${tr.nums[space.takerIdx]} ran onto it, just like in the real match. ` : `#${tr.nums[space.takerIdx]} ran onto it ${race}. `
-  } else if (m.options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
+  } else if (options.find((o) => o.pid === tr.pids[snapped.idx])?.offside) return offsideMsg(snapped.idx)
 
   const v = chosenValue ?? 0
   if (mineIsBest && mineIsPro) return { ...base, headline: 'Same as the pro!', detail: `${ran}And it was the best option. Elite.`, tone: 'great' }
