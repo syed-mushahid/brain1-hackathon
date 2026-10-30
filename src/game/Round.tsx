@@ -48,18 +48,12 @@ export const RoundControls = createContext<{
   replay2D: (who: PlayStory['who']) => void
   stopReplay: () => void
   replaying: boolean
-  /** optional pitch layers (a tapped Brave / Danger row in the Why? tab) */
-  setLayers: (show: RevealDraw['show']) => void
   /** the open "what the lines mean" popover (the ⓘ in the header): the results sheet fills it */
   legendEl: HTMLElement | null
-  /** the layer a Why? row stands for: 'brave', 't<opponent index>' (his danger line) or null */
-  layerOf: (point: string) => string | null
 }>({
   replay2D: () => {},
   stopReplay: () => {},
   replaying: false,
-  setLayers: () => {},
-  layerOf: () => null,
   legendEl: null,
 })
 
@@ -95,7 +89,6 @@ interface Api {
   panBy: (dx: number, dy: number) => void
   recenter: () => void
   stopReplay: () => void
-  setLayers: (show: RevealDraw['show']) => void
 }
 
 export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
@@ -210,7 +203,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           run: res.space.team ? { pts: res.space.run, team: res.space.team } : null,
         },
         threats: res.threats,
-        show: { brave: false, threats: [] },
+        // the brave option and every high-risk line are on the pitch from the start
+        show: { brave: !!res.brave, threats: res.threats.map((t) => t.idx) },
         offsideV: res.offsideV,
         brave: res.brave && { end: res.brave.end, run: res.brave.run, lofted: res.brave.lofted },
       }
@@ -243,7 +237,9 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 
     api.current = {
       lookStart(dir) {
-        if (g.phase !== 'approach' || g.look.active || g.budget <= 0) return
+        // the hold phase: the ball is at your feet, you may look around until the pro passes
+        const holdingNow = g.received && holdFrames > 0
+        if (g.phase !== 'approach' || g.look.active || (g.budget <= 0 && !holdingNow)) return
         g.look.active = true
         if (dir !== null) g.look.target = dir
         g.look.rec = { dir: g.look.target, startBefore: before(), endBefore: before(), sawBestBefore: null }
@@ -339,11 +335,6 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         g.replay = { tr: played, f: f0, end, kick, take, hold: 0, stage: -1, view }
         sound.whistle(1, 0.12)
       },
-      setLayers(show) {
-        if (!g.reveal) return
-        g.reveal.show = show
-        g.settled = false
-      },
       stopReplay() {
         if (!g.replay) return
         g.replay = null
@@ -399,14 +390,16 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         const yv = pos[track.youIdx * 2 + 1]
         const want = L.active ? L.target : dirTo(yu, yv, ball[0], ball[1])
         L.dir = turnTowards(L.dir, want, (HEAD_TURN * dt) / 1000)
+        // scanning in the hold phase is free: it never runs out before the pro's pass (the decision frame)
+        const holdingNow = g.received && holdFrames > 0
         if (L.active) {
-          g.budget -= dt
+          if (!holdingNow) g.budget -= dt
           L.alpha = Math.min(1, L.alpha + dt / LOOK_FADE_IN_MS)
           if (L.rec) {
             L.rec.endBefore = before()
             if (bestInCone(L.dir)) L.rec.sawBestBefore = before()
           }
-          if (g.budget <= 0) {
+          if (g.budget <= 0 && !holdingNow) {
             g.budget = 0
             stopLook()
             vibrate(30)
@@ -416,11 +409,12 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         }
         if (dial) {
           dial.style.setProperty('--head', `${(L.dir * 180) / Math.PI}deg`)
-          const b = Math.round(g.budget / 100) // update the DOM only when the tenth changes
+          const b = holdingNow ? -1 : Math.round(g.budget / 100) // update the DOM only when the tenth changes
           if (b !== shownBudget) {
             shownBudget = b
-            dial.style.setProperty('--budget', String(g.budget / S.scanBudgetMs))
-            if (dialTime) dialTime.textContent = `${(g.budget / 1000).toFixed(1)}s`
+            // hold phase: free scanning until the pass (a full ring, ∞)
+            dial.style.setProperty('--budget', holdingNow ? '1' : String(g.budget / S.scanBudgetMs))
+            if (dialTime) dialTime.textContent = holdingNow ? '∞' : `${(g.budget / 1000).toFixed(1)}s`
           }
         }
       }
@@ -671,15 +665,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           value={{
             replaying: replayStage >= 0,
             stopReplay,
-            setLayers: (show) => api.current?.setLayers(show),
             legendEl,
-            layerOf: (point) => {
-              const res = lastResult.current
-              if (!res) return null
-              if (res.brave && /^brave option/i.test(point)) return 'brave'
-              const t = res.threats.find((t) => new RegExp(`(?<![A-Za-z])[Rr]ed #${track.nums[t.idx]}(?!\\d)`).test(point))
-              return t ? `t${t.idx}` : null
-            },
             replay2D: (who) => {
               const tok = ++replayTok.current
               setReplayError('')

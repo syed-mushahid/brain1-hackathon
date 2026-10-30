@@ -2,7 +2,7 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerE
 import { createPortal } from 'react-dom'
 import { RoundControls } from '../game/Round'
 import type { RoundResult } from '../game/evaluate'
-import { BreakdownPanel, type Layers, type Tab } from './Breakdown'
+import { BreakdownPanel, type Tab } from './Breakdown'
 import { Rich } from './Rich'
 import { LineLegend } from './Legend'
 import { scoreTone, WEIGHTS } from '../game/scoring'
@@ -78,7 +78,6 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
   const [chooser, setChooser] = useState(false)
   const [in3D, setIn3D] = useState(false)
   const [playing, setPlaying] = useState<'pro' | 'you' | null>(null)
-  const [active, setActive] = useState<string[]>([]) // Why? rows shown on the pitch
   const [dragH, setDragH] = useState<number | null>(null)
   const [compactH, setCompactH] = useState<number | null>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
@@ -91,11 +90,6 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
   useEffect(() => {
     if (!ctl.replaying) setPlaying(null)
   }, [ctl.replaying])
-
-  // the pitch shows the brave / danger lines of the highlighted Why? rows
-  useEffect(() => {
-    ctl.setLayers({ brave: active.includes('brave'), threats: active.filter((k) => k[0] === 't').map((k) => Number(k.slice(1))) })
-  }, [active]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // the compact sheet's own height, so snapping between the two states can animate
   useLayoutEffect(() => {
@@ -117,10 +111,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
     setSnap('tall')
     setChooser(false)
   }
-  const close = () => {
-    setSnap('compact')
-    setActive([]) // the lines belong with their rows
-  }
+  const close = () => setSnap('compact')
   useEffect(() => {
     if (snap !== 'tall') return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
@@ -162,11 +153,6 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
     ctl.replay2D(who)
   }
 
-  const layers: Layers = {
-    keyOf: ctl.layerOf,
-    active,
-    toggle: (k) => setActive((a) => (a.includes(k) ? a.filter((x) => x !== k) : [...a, k])),
-  }
   const R = 34
   const circ = 2 * Math.PI * R
   const tall = snap === 'tall'
@@ -221,7 +207,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
     </div>
   )
   // what the lines mean, in the popover under the round's ⓘ (Round.tsx) while it is open
-  const legend = ctl.legendEl && createPortal(<LineLegend result={result} active={active} />, ctl.legendEl)
+  const legend = ctl.legendEl && createPortal(<LineLegend result={result} />, ctl.legendEl)
   const nextButtons = (
     <>
       <button className="cta next-btn" onClick={onNext}>
@@ -258,7 +244,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
                 </button>
               ))}
             </div>
-            <BreakdownPanel tab={tab} b={result.breakdown} layers={layers} />
+            <BreakdownPanel tab={tab} b={result.breakdown} />
             <h3>Replay</h3>
             {replayPicks}
             {viewSwitch}
@@ -276,7 +262,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
       {legend}
       <div
         ref={sheetRef}
-        className={`result-sheet tone-${result.tone} ${snap} ${dragH !== null ? 'dragging' : ''} ${tall && active.length ? 'peek' : ''}`}
+        className={`result-sheet tone-${result.tone} ${snap} ${dragH !== null ? 'dragging' : ''}`}
         style={height !== undefined ? { height } : undefined}
       >
         <div
@@ -350,7 +336,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
                   <Rich text={result.detail} />
                 </p>
               )}
-              <BreakdownPanel tab={tab} b={result.breakdown} layers={layers} />
+              <BreakdownPanel tab={tab} b={result.breakdown} />
             </div>
             <div className="tall-foot">{nextButtons}</div>
           </div>

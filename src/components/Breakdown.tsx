@@ -5,18 +5,10 @@ import type { PassOption } from '../types'
 
 export type Tab = 'why' | 'scan' | 'match'
 
-/** Why? rows that have a line on the pitch (the brave option, an opponent's danger line): tapping one
- *  shows that line, and the row stays highlighted with it. Keys: 'brave' or 't<player index>'. */
-export interface Layers {
-  keyOf: (point: string) => string | null
-  active: string[]
-  toggle: (key: string) => void
-}
-
-export function BreakdownPanel({ tab, b, layers }: { tab: Tab; b: Breakdown; layers?: Layers }) {
+export function BreakdownPanel({ tab, b }: { tab: Tab; b: Breakdown }) {
   return (
     <div className="sheet-panel" role="tabpanel">
-      {tab === 'why' && <Why w={b.why} layers={layers} />}
+      {tab === 'why' && <Why w={b.why} />}
       {tab === 'scan' && <Scan s={b.scan} />}
       {tab === 'match' && <Match m={b.match} />}
     </div>
@@ -44,7 +36,7 @@ function withoutTitle(title: string, point: string): string {
   return m && norm(title).includes(norm(m[1])) ? m[2] : point
 }
 
-function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
+function Why({ w }: { w: WhyInfo }) {
   const opts = w.cols.map((c) => c.o).filter((o): o is PassOption => o !== null)
   return (
     <>
@@ -52,26 +44,11 @@ function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
         <Rich text={w.title} />
       </div>
       <ul className="points">
-        {w.points.map((p, i) => {
-          const text = cap(i === 0 ? withoutTitle(w.title, p) : p)
-          const key = layers?.keyOf(p)
-          if (!layers || !key) {
-            return (
-              <li key={p}>
-                <Rich text={text} />
-              </li>
-            )
-          }
-          const on = layers.active.includes(key)
-          return (
-            <li key={p} className={`layer ${key === 'brave' ? 'brave' : 'danger'} ${on ? 'on' : ''}`}>
-              <button aria-pressed={on} onClick={() => layers.toggle(key)}>
-                <Rich text={text} />
-                <span className="layer-hint">{on ? 'On the pitch · tap to hide' : 'Show on the pitch'}</span>
-              </button>
-            </li>
-          )
-        })}
+        {w.points.map((p, i) => (
+          <li key={p}>
+            <Rich text={cap(i === 0 ? withoutTitle(w.title, p) : p)} />
+          </li>
+        ))}
       </ul>
       <table className="compare">
         <thead>

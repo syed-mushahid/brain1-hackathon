@@ -370,11 +370,6 @@ button {
   height: min(90dvh, calc(100dvh - 150px));
 }
 
-/* a Why? row is shown on the pitch: lower, so the row and its line are both in view */
-.result-sheet.tall.peek {
-  height: min(60dvh, calc(100dvh - 150px));
-}
-
 .result-sheet.dragging {
   transition: none;
 }
@@ -1285,44 +1280,6 @@ button {
 
 .next-btn {
   padding-block: 14px;
-}
-
-/* Why? rows with a line on the pitch: tap to show it (row and line highlighted together) */
-.points li.layer {
-  list-style: none;
-  margin-left: -18px;
-}
-
-.points li.layer button {
-  display: block;
-  width: 100%;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  box-shadow: inset 3px 0 0 var(--lc);
-  text-align: left;
-  line-height: 1.4;
-}
-
-.points li.layer.brave {
-  --lc: #ff9f43;
-}
-
-.points li.layer.danger {
-  --lc: #ff6464;
-}
-
-.points li.layer.on button {
-  background: color-mix(in srgb, var(--lc) 16%, transparent);
-  box-shadow: inset 0 0 0 1.5px var(--lc);
-}
-
-.layer-hint {
-  display: block;
-  margin-top: 3px;
-  color: var(--lc);
-  font-size: 0.78rem;
-  font-weight: 800;
 }
 
 /* ⓘ on the pitch: the legend */
