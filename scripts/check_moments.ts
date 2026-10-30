@@ -19,6 +19,9 @@
 //   - lofted passes are lofted where the ball height says so (the pro's: measured height, else
 //     > loftFrom; yours: a double tap), and a single tap always plays along the ground;
 //   - tapping the best option (double-tapping it when it is lofted) gives "the best option";
+//   - one decision frame everywhere (decisionFrameProblems): options, offside, tap snapping, the best
+//     option, the pro's pass and risk are judged at decision_frame_index, never at the reception, and
+//     a look during the hold phase counts as fresh; all simulated taps are read at the decision frame;
 //   - when the pro's pass is as good as the best (best.ts isProAsGoodAsBest), no tap's result implies
 //     he missed it: no separate best arrow or Best column, the pro's column says "= best", every
 //     text that mentions the best option (or "The pro played") acknowledges the pro, and the scan tab
@@ -30,10 +33,12 @@ import path from 'node:path'
 import { validateMoment, validatePlay } from '../src/data/validate'
 import type { MomentData, Play } from '../src/types'
 import { buildTrack, FPS, PITCH_L, PITCH_W, posAt, toPortrait, idxOf, type Track } from '../src/game/track'
-import { findBestPass, findBravePass, isProAsGoodAsBest, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
+import { findBestPass, findBravePass, isProAsGoodAsBest, proPassOf, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
 import { difficultyParts } from '../src/game/difficulty'
-import { evaluate, type RoundResult } from '../src/game/evaluate'
-import { flight, optionAt, RACE } from '../src/game/space'
+import { evaluate, snap, type RoundResult } from '../src/game/evaluate'
+import { flight, offsideLineV, optionAt, passRisk, RACE } from '../src/game/space'
+import { scanParts } from '../src/game/scoring'
+import type { ScanRecord } from '../src/game/vision'
 import { proLofted } from '../src/game/facts'
 import { MODEL } from '../src/game/model.config'
 import { hashString, mulberry32 } from '../src/lib/util'
@@ -167,6 +172,81 @@ function checkTap(tr: Track, kind: string, tap: [number, number], problems: stri
     }
   }
   return { kind, tap, headline: r.headline, p: r.p, risk: r.risk }
+}
+
+/**
+ * One decision frame everywhere: the user's decision, the pro's pass, the best option, offside and risk
+ * are all judged at decision_frame_index (the frame the pro played pass 2), never at the reception.
+ *   - straight from the raw frames at the decision: every option's distance, every offside flag, and a
+ *     tap on a teammate's position there snaps to him; the pro's taker run starts there;
+ *   - moving reception_frame_index changes no judgement (best, brave, the pro's value, risk, a tap's result);
+ *   - the hold phase: a look during the hold (ending at the decision) is fresh, and a tap at the
+ *     decision frame plays as the same pass with that scan.
+ */
+function decisionFrameProblems(m: MomentData, tr: Track, P: string[]): void {
+  const D = m.decision_frame_index
+  if (tr.dec !== D) P.push(`decision frame: the game judges at frame ${tr.dec}, not decision_frame_index ${D}`)
+  const raw = m.frames[D]
+  const rawAt = (pid: string) => {
+    const p = raw.players.find((q) => q.pid === pid)!
+    return { x: p.x, y: p.y }
+  }
+  const you = rawAt(m.you_pid)
+  // options and offside from the raw decision frame (data coords: attack towards x = 105)
+  const defX = raw.players.filter((p) => p.team === 'def').map((p) => p.x).sort((a, b) => b - a)
+  const lineX = Math.max(defX[1] ?? 0, raw.ball.x, PITCH_L / 2) + MODEL.geometry.offsideTolM
+  for (const o of scoredOptions(tr)) {
+    const q = rawAt(o.pid)
+    const d = Math.hypot(q.x - you.x, q.y - you.y)
+    if (Math.abs(o.dist - d) > 0.11) P.push(`decision frame: option #${o.num} is ${o.dist} m away, ${d.toFixed(1)} m at the decision frame`)
+    if (!!o.offside !== q.x > lineX) P.push(`decision frame: #${o.num} offside=${!!o.offside}, at the decision frame ${q.x > lineX}`)
+  }
+  // tap snapping: a tap on a teammate where he stood at the decision frame is a pass to him
+  for (const p of raw.players) {
+    if (p.team !== 'att' || p.pid === m.you_pid) continue
+    const s = snap(tr, toPortrait(p.x, p.y))
+    if (s.idx !== idxOf(tr, p.pid) || s.dist > 0.15) P.push(`decision frame: a tap on #${p.num} there snaps to ${s.idx >= 0 ? `#${tr.nums[s.idx]}` : 'nobody'}`)
+  }
+  // the pro's pass: his taker's run starts at the decision frame
+  const tk = m.actual.taker
+  if (tk && tk.run.length) {
+    const q = rawAt(tk.pid)
+    const d = Math.hypot(tk.run[0][0] - q.x, tk.run[0][1] - q.y)
+    if (d > 0.3) P.push(`decision frame: the taker's run starts ${d.toFixed(1)} m from where he was at the decision frame`)
+  }
+  // the reception is display only: moving it changes no judgement
+  const tr2 = buildTrack({ ...m, reception_frame_index: m.pass1_frame_index })
+  const sig = (t: Track) => {
+    const b = findBestPass(t)
+    const bv = findBravePass(t)
+    const pro = proPassOf(t)
+    const bestTap: [number, number] = b.intoSpace ? b.end : posAt(t, t.dec, b.idx)
+    const r = evaluate(t, { tap: bestTap, scans: [], lofted: b.lofted })
+    const risk = passRisk(t, b.intoSpace ? b.end : posAt(t, t.dec, b.idx), b.intoSpace ? b.t : undefined, RACE, b.lofted)
+    return JSON.stringify({
+      best: [b.idx, b.end.map((x) => x.toFixed(2)), b.o.value, b.o.p],
+      brave: bv && [bv.idx, bv.o.value],
+      pro: pro && [pro.idx, pro.o?.value ?? null],
+      offside: offsideLineV(t).toFixed(2),
+      risk: risk && [risk.idx, risk.slack.toFixed(3)],
+      tap: [r.headline, r.scores.decision, r.risk],
+    })
+  }
+  const a = sig(tr)
+  const b = sig(tr2)
+  if (a !== b) P.push(`decision frame: moving reception_frame_index changes the judgement (${a} vs ${b})`)
+  // the hold phase: a look at the best option during the hold, until the decision, is fresh
+  const best = findBestPass(tr)
+  const holdS = (m.decision_frame_index - m.reception_frame_index) / FPS
+  const look: ScanRecord = { dir: 0, startBefore: Math.max(holdS, 0.5), endBefore: 0, sawBestBefore: 0 }
+  const parts = scanParts([look])
+  if (parts.timing !== MODEL.scoring.scan.timingFresh || parts.target !== MODEL.scoring.scan.targetFresh)
+    P.push(`hold phase: a look until the decision scores timing ${parts.timing}, target ${parts.target} (not fresh)`)
+  const bestTap: [number, number] = best.intoSpace ? best.end : posAt(tr, tr.dec, best.idx)
+  const withScan = evaluate(tr, { tap: bestTap, scans: [look], lofted: best.lofted })
+  const without = evaluate(tr, { tap: bestTap, scans: [], lofted: best.lofted })
+  if (withScan.headline !== without.headline || withScan.scores.decision !== without.scores.decision || withScan.scores.scan !== parts.timing + parts.target)
+    P.push(`hold phase: a tap at the decision frame with a hold-phase look gives "${withScan.headline}" (scan ${withScan.scores.scan})`)
 }
 
 interface MomentReport {
@@ -325,6 +405,8 @@ function checkMoment(file: string): MomentReport {
     q = [Math.max(0.5, Math.min(PITCH_W - 0.5, q[0])), Math.max(0.5, Math.min(PITCH_L - 0.5, q[1]))]
     taps.push(checkTap(tr, 'random', q, P, k % 4 === 3)) // every 4th a double tap (lofted)
   }
+
+  decisionFrameProblems(m, tr, P)
 
   rep.ok = P.length === 0
   rep.difficulty = parts.difficulty
