@@ -10,7 +10,6 @@ import { evaluate, type RoundResult } from './evaluate'
 import { coneVis, dirTo, HEAD_TURN, turnTowards, type ScanRecord } from './vision'
 import { ScanDial } from './ScanDial'
 import { findBestPass } from './best'
-import { minuteLabel } from './explain'
 import type { MomentData } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
@@ -739,11 +738,21 @@ export function named(tr: Track, texts: string[]): number[] {
 export function Who({ m }: { m: MomentData }) {
   const you = m.names[m.you_pid]
   const team = m.context.attacking === 'home' ? m.context.home : m.context.away
+  // your shirt number, as the circle you are on the pitch (not the match minute: that read like a number)
+  const num = m.frames[0].players.find((p) => p.pid === m.you_pid)?.num
   return (
     <div className="who">
-      You are {you?.name ?? `#${m.you_pid.slice(1)}`}{' '}
+      You are {you?.name ?? 'this player'}{' '}
       <small>
-        · {team} · {minuteLabel(m)}
+        · {team}
+        {num !== undefined && (
+          <>
+            {' · '}
+            <span className="pchip att" role="img" aria-label={`number ${num}`}>
+              {num}
+            </span>
+          </>
+        )}
       </small>
     </div>
   )
