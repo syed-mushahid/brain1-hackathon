@@ -72,13 +72,13 @@ export interface RoundResult {
   scores: Scores
 }
 
-/** Snap a tap to the nearest attacking teammate's TRUE position at reception. */
+/** Snap a tap to the nearest attacking teammate's TRUE position at the decision frame (when the pro passed). */
 export function snap(tr: Track, tap: [number, number]): { idx: number; dist: number } {
   let idx = -1
   let dist = Infinity
   for (let i = 0; i < tr.n; i++) {
     if (!tr.att[i] || i === tr.youIdx) continue
-    const [u, v] = posAt(tr, tr.rec, i)
+    const [u, v] = posAt(tr, tr.dec, i)
     const d = Math.hypot(u - tap[0], v - tap[1])
     if (d < dist) {
       dist = d
@@ -104,14 +104,14 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
   const feetOption = (idx: number): PassOption | null => {
     const o = options.find((x) => x.pid === tr.pids[idx]) ?? null
     if (!o || !lofted) return o
-    const lo = optionAt(tr, idx, posAt(tr, tr.rec, idx), undefined, RACE, true)
+    const lo = optionAt(tr, idx, posAt(tr, tr.dec, idx), undefined, RACE, true)
     return { ...lo, offside: o.offside, value: o.offside ? 0 : lo.value }
   }
   // the best pass may be to a teammate's feet or into space (best.ts)
   const best = findBestPass(tr)
   const bestIdx = best.idx
-  const [yu, yv] = posAt(tr, tr.rec, tr.youIdx)
-  const [bu, bv] = posAt(tr, tr.rec, bestIdx)
+  const [yu, yv] = posAt(tr, tr.dec, tr.youIdx)
+  const [bu, bv] = posAt(tr, tr.dec, bestIdx)
   const where = whereIs(yu, yv, bu, bv)
   // "through ball" only when he runs on behind the defensive line, else "a pass into space for"
   const describe = (idx: number, end: [number, number], intoSpace: boolean, loft: boolean, n = tr.nums[idx]) =>
@@ -164,7 +164,7 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
       ? null
       : proIntoSpace
         ? passRisk(tr, proEnd, arrivalTime(tr, takerIdx, proEnd, RACE, proLoft), RACE, proLoft)
-        : passRisk(tr, posAt(tr, tr.rec, takerIdx), undefined, RACE, proLoft)
+        : passRisk(tr, posAt(tr, tr.dec, takerIdx), undefined, RACE, proLoft)
   // the pro's pass arrived although the model rated it risky: say it got through this time
   const proP = proOpt?.p ?? 1
   if (m.actual.outcome === 'received' && proRisk?.lane)
@@ -217,7 +217,7 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
       ? 'you never looked that way'
       : seen.some((b) => b <= RECENT_SCAN_S)
         ? 'you saw it in your scan'
-        : `you looked too early – last check ${Math.min(...seen).toFixed(1)} s before the ball came`
+        : `you looked too early – last check ${Math.min(...seen).toFixed(1)} s before you had to pass`
 
   // The ball goes where you tap: close to a teammate = a pass to his feet (memory = how close
   // you tapped), anywhere else = a pass into space (race to the ball). A tap that is closer to
@@ -234,14 +234,14 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
   // 50 % the opponent who comes closest to cutting it out takes it where he meets the ball
   const feetOpt = snapped.idx >= 0 ? feetOption(snapped.idx) : null
   const feetRisk =
-    feetOpt && !feetOpt.offside && (feetOpt.p ?? 1) < 0.5 ? passRisk(tr, posAt(tr, tr.rec, snapped.idx), undefined, RACE, lofted) : null
+    feetOpt && !feetOpt.offside && (feetOpt.p ?? 1) < 0.5 ? passRisk(tr, posAt(tr, tr.dec, snapped.idx), undefined, RACE, lofted) : null
   const lost: SpaceOutcome | null = feetRisk
     ? {
         end: feetRisk.at,
         takerIdx: feetRisk.idx,
         team: 'def',
-        run: [posAt(tr, tr.rec, feetRisk.idx), feetRisk.at],
-        t: flight(Math.hypot(posAt(tr, tr.rec, snapped.idx)[0] - yu, posAt(tr, tr.rec, snapped.idx)[1] - yv), lofted).t(
+        run: [posAt(tr, tr.dec, feetRisk.idx), feetRisk.at],
+        t: flight(Math.hypot(posAt(tr, tr.dec, snapped.idx)[0] - yu, posAt(tr, tr.dec, snapped.idx)[1] - yv), lofted).t(
           Math.hypot(feetRisk.at[0] - yu, feetRisk.at[1] - yv),
         ),
         rivalIdx: snapped.idx,
@@ -267,18 +267,18 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
       ? passRisk(tr, space.end, space.t, RACE, space.lofted)
       : null
     : snapped.idx >= 0
-      ? passRisk(tr, posAt(tr, tr.rec, snapped.idx), undefined, RACE, lofted)
+      ? passRisk(tr, posAt(tr, tr.dec, snapped.idx), undefined, RACE, lofted)
       : null
   const threats = [myRisk, proRisk]
     .filter((r): r is Risk => r !== null && riskLevel(r.slack) === 'high')
-    .map((r) => ({ idx: r.idx, from: posAt(tr, tr.rec, r.idx), at: r.at }))
+    .map((r) => ({ idx: r.idx, from: posAt(tr, tr.dec, r.idx), at: r.at }))
   // each pass as (receiver, end point): two passes are the same when those match (best.ts)
   const proPass = PP && { idx: PP.idx, end: PP.end, lofted: PP.lofted }
   const myPass =
     space && space.team === 'att' && !space.offside
       ? { idx: space.takerIdx, end: space.end, lofted: space.lofted }
       : snapped.idx >= 0
-        ? { idx: snapped.idx, end: posAt(tr, tr.rec, snapped.idx), lofted }
+        ? { idx: snapped.idx, end: posAt(tr, tr.dec, snapped.idx), lofted }
         : null
   // your pass's chance to arrive (to feet, into space, or the one that was cut out)
   const myOpt: PassOption | null =

@@ -14,7 +14,7 @@ export const SKILLS: Skill[] = ['decision', 'scan', 'memory']
 export const SKILL_NAME: Record<Skill, string> = { decision: 'Decision', scan: 'Scan', memory: 'Memory' }
 const WEAK_SPOT: Record<Skill, string> = {
   decision: 'picking the best pass',
-  scan: 'looking around before the ball arrives',
+  scan: 'looking around before you pass',
   memory: 'remembering where your teammates stand',
 }
 
@@ -66,7 +66,7 @@ export interface SessionRound {
   risky: boolean
   /** you found the best option (or one as good) */
   best: boolean
-  /** scan timing: 'fresh' = looked in the last moments before the ball, 'early', 'none' */
+  /** scan timing: 'fresh' = looked in the last moments before you had to pass, 'early', 'none' */
   look: 'fresh' | 'early' | 'none'
 }
 
@@ -103,7 +103,7 @@ export function sessionInsight(rounds: SessionRound[], before: Pick<RoundRecord,
         : 'you spotted the best option more often'
       : count((r) => r.look === 'none') >= 2
         ? `you didn't look around in ${count((r) => r.look === 'none')} rounds`
-        : 'look again just before the ball arrives'
+        : 'look again just before you pass'
   else why = up ? 'your taps landed closer to where teammates really were' : 'your taps were further from where teammates really stood'
   return { text: `${SKILL_NAME[top.k]} ${up ? '▲' : '▼'}${Math.abs(top.d)}: ${why}`, tone: up ? 'up' : 'down' }
 }

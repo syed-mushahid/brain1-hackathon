@@ -9,7 +9,7 @@ import { dirTo } from '../game/vision'
 // off screen, in a hidden tab and with reduced motion (one still frame).
 
 const STEP_MS = 100 // one 10 fps data frame per draw
-const HOLD_FRAMES = 12 // the picture rests on the reception before the loop restarts
+const HOLD_FRAMES = 12 // the picture rests on the decision frame before the loop restarts
 const SWEEP = 2.3 // rad: how far the look swings away from the ball
 
 export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | 'whole' }) {
@@ -29,13 +29,13 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     let timer = 0
 
     const draw = (frame: number) => {
-      const fc = Math.min(frame, tr.rec)
+      const fc = Math.min(frame, tr.dec)
       sample(tr, fc, pos, ball)
       const yu = pos[tr.youIdx * 2]
       const yv = pos[tr.youIdx * 2 + 1]
       const toBall = dirTo(yu, yv, ball[0], ball[1])
       // the look: a sweep away from the ball and back, between 20 % and 75 % of the approach
-      const t = (fc / tr.rec - 0.2) / 0.55
+      const t = (fc / tr.dec - 0.2) / 0.55
       const look = t > 0 && t < 1 ? Math.min(1, Math.sin(Math.PI * t) * 3) : 0
       r.draw({
         mode: 'approach',
@@ -60,7 +60,7 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
         // a band: the pitch fills the width, centred on "you" (a little towards where the ball comes from)
         r.resize(w, Infinity)
         const ballV = tr.ball[1] // first frame
-        const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
+        const youV = tr.pos[(tr.dec * tr.n + tr.youIdx) * 2 + 1]
         const mid = r.Y(0.8 * youV + 0.2 * ballV)
         canvas.style.transform = `translateY(${-Math.max(0, Math.min(r.h - h, mid - h / 2))}px)`
       }
@@ -68,13 +68,13 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     }
     const tick = () => {
       if (!onScreen || document.hidden) return
-      f = f >= tr.rec + HOLD_FRAMES ? 0 : f + 1
+      f = f >= tr.dec + HOLD_FRAMES ? 0 : f + 1
       draw(f)
     }
     const run = () => {
       clearInterval(timer)
       if (reduce.matches) {
-        f = Math.round(tr.rec * 0.45) // still frame: mid-scan, the look cone open
+        f = Math.round(tr.dec * 0.45) // still frame: mid-scan, the look cone open
         draw(f)
       } else timer = window.setInterval(tick, STEP_MS)
     }

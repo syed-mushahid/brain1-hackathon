@@ -60,7 +60,7 @@ export const MODEL = {
     /** margin used when no opponent can get near the pass at all (P ~ 1) */
     noOpponentS: 3,
     /**
-     * A defender standing in the lane (at the reception within race.reach of the ball's path, where the
+     * A defender standing in the lane (at the decision frame within race.reach of the ball's path, where the
      * ball can be reached and short of the receiver) cuts the pass out with probability q * facing:
      *   P = P_race * (1 - q * facing),   facing = 1 - facingAlpha * away * running
      *   away    = (1 - cos) / 2 of his running direction vs the direction to the ball (1 = straight away)
@@ -177,7 +177,7 @@ export const MODEL = {
   /** Scores (scoring.ts). [GAME] */
   scoring: {
     weights: { decision: 0.5, scan: 0.25, memory: 0.25 },
-    /** looks in the last recentS (s) before reception count as fresh */
+    /** looks in the last recentS (s) before you had to pass (the decision frame) count as fresh */
     recentS: 1.5,
     /** Scan = timing (fresh look / only earlier) + target (best option seen fresh / only earlier) */
     scan: { timingFresh: 60, timingEarly: 15, targetFresh: 40, targetEarly: 20 },

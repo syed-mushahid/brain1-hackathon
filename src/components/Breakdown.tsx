@@ -5,18 +5,10 @@ import type { PassOption } from '../types'
 
 export type Tab = 'why' | 'scan' | 'match'
 
-/** Why? rows that have a line on the pitch (the brave option, an opponent's danger line): tapping one
- *  shows that line, and the row stays highlighted with it. Keys: 'brave' or 't<player index>'. */
-export interface Layers {
-  keyOf: (point: string) => string | null
-  active: string[]
-  toggle: (key: string) => void
-}
-
-export function BreakdownPanel({ tab, b, layers }: { tab: Tab; b: Breakdown; layers?: Layers }) {
+export function BreakdownPanel({ tab, b }: { tab: Tab; b: Breakdown }) {
   return (
     <div className="sheet-panel" role="tabpanel">
-      {tab === 'why' && <Why w={b.why} layers={layers} />}
+      {tab === 'why' && <Why w={b.why} />}
       {tab === 'scan' && <Scan s={b.scan} />}
       {tab === 'match' && <Match m={b.match} />}
     </div>
@@ -44,7 +36,7 @@ function withoutTitle(title: string, point: string): string {
   return m && norm(title).includes(norm(m[1])) ? m[2] : point
 }
 
-function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
+function Why({ w }: { w: WhyInfo }) {
   const opts = w.cols.map((c) => c.o).filter((o): o is PassOption => o !== null)
   return (
     <>
@@ -52,26 +44,11 @@ function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
         <Rich text={w.title} />
       </div>
       <ul className="points">
-        {w.points.map((p, i) => {
-          const text = cap(i === 0 ? withoutTitle(w.title, p) : p)
-          const key = layers?.keyOf(p)
-          if (!layers || !key) {
-            return (
-              <li key={p}>
-                <Rich text={text} />
-              </li>
-            )
-          }
-          const on = layers.active.includes(key)
-          return (
-            <li key={p} className={`layer ${key === 'brave' ? 'brave' : 'danger'} ${on ? 'on' : ''}`}>
-              <button aria-pressed={on} onClick={() => layers.toggle(key)}>
-                <Rich text={text} />
-                <span className="layer-hint">{on ? 'On the pitch · tap to hide' : 'Show on the pitch'}</span>
-              </button>
-            </li>
-          )
-        })}
+        {w.points.map((p, i) => (
+          <li key={p}>
+            <Rich text={cap(i === 0 ? withoutTitle(w.title, p) : p)} />
+          </li>
+        ))}
       </ul>
       <table className="compare">
         <thead>
@@ -122,12 +99,15 @@ function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
 
 function Scan({ s }: { s: ScanInfo }) {
   const pct = (before: number) => `${Math.max(0, Math.min(100, (1 - before / s.span) * 100))}%`
+  // the pro held the ball before passing: mark when it reached you (one-touch: the end is both)
+  const hold = s.receivedBefore >= 0.15
   return (
     <>
-      <div className="tl" aria-label="Your looks before the ball arrived">
+      <div className="tl" aria-label="Your looks before you had to pass">
         <div className="tl-track">
           <div className="tl-fresh" style={{ left: pct(RECENT_SCAN_S) }} />
           <div className="tl-kick" style={{ left: pct(s.kickBefore) }} />
+          {hold && <div className="tl-kick" style={{ left: pct(s.receivedBefore) }} />}
           {s.looks.map((l, i) => (
             <div
               key={i}
@@ -139,7 +119,8 @@ function Scan({ s }: { s: ScanInfo }) {
         </div>
         <div className="tl-labels">
           <span style={{ left: pct(s.kickBefore) }}>pass to you</span>
-          <span className="end">ball arrives</span>
+          {hold && <span style={{ left: pct(s.receivedBefore) }}>at your feet</span>}
+          <span className="end">{hold ? 'you pass' : 'ball arrives'}</span>
         </div>
       </div>
       <div className="tl-key">

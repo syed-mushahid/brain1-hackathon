@@ -50,10 +50,12 @@ export interface WhyInfo {
 }
 
 export interface ScanInfo {
-  /** seconds of play shown before the ball arrived */
+  /** seconds of play shown before you had to pass */
   span: number
-  /** pass 1 kicked, seconds before the ball arrived */
+  /** pass 1 kicked, seconds before you had to pass */
   kickBefore: number
+  /** the ball reached you, seconds before you had to pass (0 = a one-touch pass) */
+  receivedBefore: number
   looks: { from: number; to: number; saw: number | null }[]
   lines: string[]
   timing: number
@@ -164,7 +166,7 @@ export function explain(
     space && spaceOpt
       ? kindName('your', space.takerIdx, space.end, true, spaceOpt.num, space.lofted)
       : mine
-        ? kindName('your', chosenIdx, posAt(tr, tr.rec, chosenIdx), false, mine.num, !!mine.lofted)
+        ? kindName('your', chosenIdx, posAt(tr, tr.dec, chosenIdx), false, mine.num, !!mine.lofted)
         : 'your pass'
   const proName = pro ? kindName('the pro’s', idxOf(tr, pro.pid), proEnd, proSpace, pro.num, !!pro.lofted) : 'the pro’s pass'
   const bestName = kindName('a', bestIdx, B.end, B.intoSpace, best.num, B.lofted)
@@ -280,7 +282,7 @@ export function explain(
     return { text: level === 'low' ? 'low' : `${level} (#${tr.nums[r.idx]})`, level } // always an opponent
   }
   const bestRisk = riskCell(
-    B.intoSpace ? passRisk(tr, B.end, B.t, RACE, B.lofted) : passRisk(tr, posAt(tr, tr.rec, bestIdx), undefined, RACE, B.lofted),
+    B.intoSpace ? passRisk(tr, B.end, B.t, RACE, B.lofted) : passRisk(tr, posAt(tr, tr.dec, bestIdx), undefined, RACE, B.lofted),
   )
   // one column per different pass: yours, the pro's, the best (merged when they are the same)
   const run = (o: PassOption, intoSpace: boolean) => {
@@ -302,14 +304,14 @@ export function explain(
       tone: 'brave',
       o: Bv.o,
       risk: riskCell(
-        Bv.intoSpace ? passRisk(tr, Bv.end, Bv.t, RACE, Bv.lofted) : passRisk(tr, posAt(tr, tr.rec, Bv.idx), undefined, RACE, Bv.lofted),
+        Bv.intoSpace ? passRisk(tr, Bv.end, Bv.t, RACE, Bv.lofted) : passRisk(tr, posAt(tr, tr.dec, Bv.idx), undefined, RACE, Bv.lofted),
       ),
     })
 
   // ---- scan
   const youIdx = tr.youIdx
-  const [yu, yv] = posAt(tr, tr.rec, youIdx)
-  const [bu, bv] = posAt(tr, tr.rec, bestIdx)
+  const [yu, yv] = posAt(tr, tr.dec, youIdx)
+  const [bu, bv] = posAt(tr, tr.dec, bestIdx)
   const where = whereIs(yu, yv, bu, bv)
   const seen = scans.map((s) => s.sawBestBefore).filter((b): b is number => b !== null)
   const lastSaw = seen.length ? Math.min(...seen) : null
@@ -317,16 +319,16 @@ export function explain(
   const lines: string[] = []
   if (scans.length === 0) {
     lines.push('You didn’t look around at all.')
-    lines.push(`${bestN} was ${where}. Turn the dial while the ball is on its way to see who is free.`)
+    lines.push(`${bestN} was ${where}. Turn the dial before you have to pass to see who is free.`)
   } else if (lastSaw === null) {
     const dirs = [...new Set(scans.map((s) => lookWord(s.dir)))]
     lines.push(`You looked ${dirs.join(' and ')} – but ${bestN} was ${where}, outside every look.`)
     if (lastEnd !== null && lastEnd > RECENT_SCAN_S)
-      lines.push(`Your last look ended ${lastEnd.toFixed(1)} s before the ball arrived – too early to count as fresh.`)
+      lines.push(`Your last look ended ${lastEnd.toFixed(1)} s before you had to pass – too early to count as fresh.`)
   } else if (lastSaw > RECENT_SCAN_S) {
-    lines.push(`You last saw ${bestN} ${lastSaw.toFixed(1)} s before the ball arrived.`)
+    lines.push(`You last saw ${bestN} ${lastSaw.toFixed(1)} s before you had to pass.`)
     // what changed after that look
-    const fThen = Math.max(0, Math.round(tr.rec - lastSaw * FPS))
+    const fThen = Math.max(0, Math.round(tr.dec - lastSaw * FPS))
     const [tu, tv] = posAt(tr, fThen, bestIdx)
     const moved = Math.hypot(bu - tu, bv - tv)
     const nearestDef = (f: number) => {
@@ -340,7 +342,7 @@ export function explain(
       return d
     }
     const dThen = nearestDef(fThen)
-    const dNow = nearestDef(tr.rec)
+    const dNow = nearestDef(tr.dec)
     const changes: string[] = []
     if (moved >= 2) changes.push(`${bestN} moved ${metres(moved)}`)
     if (Math.abs(dNow - dThen) >= 1.5)
@@ -352,9 +354,9 @@ export function explain(
         ? `After that, ${changes.join(' and ')} – your picture was out of date.`
         : 'The picture barely changed after that – but you couldn’t know without checking again.',
     )
-    lines.push(`Pros check again in the last ${RECENT_SCAN_S} s, so what they see is fresh when the ball arrives.`)
+    lines.push(`Pros check again in the last ${RECENT_SCAN_S} s, so what they see is fresh when they pass.`)
   } else {
-    lines.push(`You saw ${bestN} ${lastSaw.toFixed(1)} s before the ball arrived – a fresh picture.`)
+    lines.push(`You saw ${bestN} ${lastSaw.toFixed(1)} s before you had to pass – a fresh picture.`)
     if (myOpt && !mineIsBest) lines.push(`But you passed to #${myOpt.num} – trust what your scan showed you.`)
   }
   // the best option you were looking for: the pro chose it (or an equally good pass)
@@ -389,8 +391,9 @@ export function explain(
   return {
     why: { title, points, cols, note },
     scan: {
-      span: tr.rec / FPS,
-      kickBefore: (tr.rec - tr.pass1) / FPS,
+      span: tr.dec / FPS,
+      kickBefore: (tr.dec - tr.pass1) / FPS,
+      receivedBefore: (tr.dec - tr.rec) / FPS,
       looks: scans.map((s) => ({ from: s.startBefore, to: s.endBefore, saw: s.sawBestBefore })),
       lines,
       timing,

@@ -9,7 +9,11 @@ Scientific Data, doi:10.1038/s41597-025-04505-y).
 
 A "moment" is two consecutive open-play passes by the same team:
     pass 1: A -> B            (the incoming ball)
-    pass 2: B -> ?            (made <= 3 s after B receives; the decision we test)
+    pass 2: B -> ?            (made <= max_hold_s after B receives; the decision we test)
+
+The decision is tested at the frame where B really played pass 2 (decision_frame_index), so the
+user decides on exactly the positions the pro passed on. Between the reception and that frame B
+holds the ball (the hold phase); one-touch moments have reception = decision.
 
 Run (needs node + `npm install` for the game's checker):
     pip install kloppy matplotlib numpy
@@ -20,6 +24,7 @@ Useful options:
                       whose manifest is then refreshed); moments already there are never re-picked
     --clean           delete the moment files in --out first (regenerate everything)
     --n 30            number of moments to add
+    --max-hold-s 2.0  only moments where B passed within this many seconds of receiving
     --seed 7          selection seed (selection is deterministic for a given seed)
     --data DIR        folder with the DFL XML files (matchinformation / events_raw /
                       positions_raw_observed per match)
@@ -63,16 +68,17 @@ import numpy as np
 PITCH_X, PITCH_Y = 105.0, 68.0
 FPS_RAW = 25          # DFL tracking frame rate
 FPS_OUT = 10          # frame rate of the moment files
-SCHEMA_VERSION = 1    # data contract version (src/data/moment.schema.json)
+SCHEMA_VERSION = 2    # data contract version (src/data/moment.schema.json)
 
 # ----------------------------------------------------------------------------
 # Moment rules
 # ----------------------------------------------------------------------------
-MAX_HOLD_S = 3.0          # B must release pass 2 within this many seconds of receiving
+MAX_HOLD_S = 2.0          # max_hold_s: B must release pass 2 within this many seconds of receiving (--max-hold-s)
+SEARCH_HOLD_S = 3.0       # how far after the reception pass 2 is looked for (longer holds are skipped)
 MAX_PASS1_S = 4.0         # pass 1 longer than this (kick -> reception) is ignored
 TOUCH_M = 1.5             # ball within this distance (2D) of a player = "at his feet"
 DEF_THIRD_X = PITCH_X / 3 # B receiving at x < this (after normalisation) = own defensive third
-AFTER_RECEPTION_S = 0.5   # frames written after reception
+AFTER_DECISION_S = 0.5    # frames written after the decision frame (pass 2)
 LEAD_IN_S = 2.0           # frames written before the pass 1 kick (build-up; game scan time)
 MIN_PASS2_M = 8.0         # pass 2 shorter than this is not an interesting decision
 TAKEOVER_MAX_S = 8.0      # follow the ball after pass 2 at most this long to find who took it over
@@ -403,7 +409,7 @@ def find_takeover(ball, alive, xy, cols, start, stop, skip_col=None, skip_until=
     return stop - 1, None, 'loose'
 
 
-def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
+def build_candidate(m, tr, p1, p2, ev_start, offsets, skips, max_hold_s=MAX_HOLD_S):
     """Align a pass pair with tracking, validate it and compute all moment fields.
 
     Returns a dict, or None (reason counted in `skips`)."""
@@ -460,24 +466,24 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
     dB2 = dist_to(cb, rec, hi)
     leave = first_true(dB2 > 3.0)
     if leave is None:
-        skips['B held/dribbled > 3 s'] += 1
+        skips[f'B held/dribbled > {max_hold_s:g} s'] += 1
         return None
     at_feet = np.flatnonzero(dB2[:leave] <= TOUCH_M)
     kick2 = rec + int(at_feet[-1] if len(at_feet) else 0)
     hold = (kick2 - rec) / FPS_RAW
-    if hold > MAX_HOLD_S:
-        skips['B held/dribbled > 3 s'] += 1
+    if hold > min(max_hold_s, SEARCH_HOLD_S):
+        skips[f'B held/dribbled > {max_hold_s:g} s'] += 1
         return None
     if abs(kick2 - i2) > 1.5 * FPS_RAW:
         skips['event/tracking mismatch at pass 2'] += 1
         return None
 
-    # --- ball in play and complete tracking from pass 1 to reception + 0.5 s (+ B's touch)
-    w_end = max(kick2, rec + int(AFTER_RECEPTION_S * FPS_RAW)) + 1
+    # --- ball in play and complete tracking from pass 1 to the decision (pass 2) + 0.5 s
+    w_end = kick2 + int(AFTER_DECISION_S * FPS_RAW) + 1
     if not alive[kick1:w_end].all():
         skips['ball out of play during moment'] += 1
         return None
-    present = ~np.isnan(xy[rec, :, 0])
+    present = ~np.isnan(xy[rec, :, 0]) & ~np.isnan(xy[kick2, :, 0])
     span = xy[kick1:w_end + 1][:, present, 0]
     if np.isnan(span).any() or np.isnan(ball[kick1:w_end + 1]).any():
         skips['missing tracking frames'] += 1
@@ -552,11 +558,12 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
     zs = ball[kick2:take_k + 1, 2]
     max_z = float(np.nanmax(zs)) if np.isfinite(zs).any() else 0.0
 
-    # --- the decision moment (reception frame): only what selection needs as a preference
+    # --- the decision moment (the frame B played pass 2): only what selection needs as a preference
     #     (the game computes options, pressure and difficulty itself)
-    defs = np.array([norm(xy[rec, c]) for c in def_cols])
-    pressure = float(np.min(np.linalg.norm(defs - b_pos, axis=1)))
-    mates_35 = sum(1 for c in att_cols if c != cb and np.linalg.norm(norm(xy[rec, c]) - b_pos) <= PREF_TEAMMATES_RADIUS_M)
+    d_pos = norm(xy[kick2, cb])
+    defs = np.array([norm(xy[kick2, c]) for c in def_cols])
+    pressure = float(np.min(np.linalg.norm(defs - d_pos, axis=1)))
+    mates_35 = sum(1 for c in att_cols if c != cb and np.linalg.norm(norm(xy[kick2, c]) - d_pos) <= PREF_TEAMMATES_RADIUS_M)
 
     def pid_of(c):
         return ('A' if tr.teams[c] == team else 'D') + str(tr.jerseys[c])
@@ -592,14 +599,14 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
         skips['pass 2 shorter than 8 m'] += 1
         return None
 
-    # --- who took the ball over, and his run from the decision frame to that spot
+    # --- who took the ball over, and his run from the decision frame (pass 2) to that spot
     if take_col is None:
         outcome, taker = ('out' if how == 'out' else 'loose'), None
     else:
         outcome = 'received' if tr.teams[take_col] == team else 'intercepted'
-        ks = list(range(rec, take_k, FPS_RAW // RUN_FPS)) + [take_k]
+        ks = list(range(kick2, take_k, FPS_RAW // RUN_FPS)) + [take_k]
         run = [norm(xy[k, take_col]) for k in ks if not np.isnan(xy[k, take_col]).any()]
-        taker = dict(pid=pid_of(take_col), t=round((take_k - rec) / FPS_RAW, 1),
+        taker = dict(pid=pid_of(take_col), t=round((take_k - kick2) / FPS_RAW, 1),
                      run=[[round(float(p[0]), 1), round(float(p[1]), 1)] for p in run])
 
     # --- lead-in before pass 1 (gives the game time to scan): extend back up to
@@ -609,12 +616,14 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
             and not np.isnan(ball[lead - 1]).any() and not np.isnan(xy[lead - 1][present]).any():
         lead -= 1
 
-    # --- frames at 10 fps, aligned so the reception lands exactly on a frame
+    # --- frames at 10 fps, aligned so the decision (pass 2) lands exactly on a frame: the user
+    #     decides on exactly the positions the pro passed on. The reception is the nearest frame.
     step = FPS_RAW / FPS_OUT
-    n_before = int((rec - lead) // step)
-    pass1_idx = n_before - int((rec - kick1) // step)
-    n_after = int(round(AFTER_RECEPTION_S * FPS_OUT))
-    fidx = [rec - step * j for j in range(n_before, 0, -1)] + [rec + step * j for j in range(0, n_after + 1)]
+    dec_idx = int((kick2 - lead) // step)
+    rec_idx = dec_idx - int(round((kick2 - rec) / step))
+    pass1_idx = dec_idx - int(round((kick2 - kick1) / step))
+    n_after = int(round(AFTER_DECISION_S * FPS_OUT))
+    fidx = [kick2 - step * j for j in range(dec_idx, 0, -1)] + [kick2 + step * j for j in range(0, n_after + 1)]
     cols = list(att_cols) + list(def_cols)
 
     def interp(arr, f):
@@ -633,12 +642,13 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
         frames.append(dict(t=round(j / FPS_OUT, 1), ball=dict(x=round(float(bp[0]), 1), y=round(float(bp[1]), 1)),
                            players=pl))
 
-    # --- the rest of the play for the replays (plays.json): from the reception through pass 2
+    # --- the rest of the play for the replays (plays.json): from the reception frame through pass 2
     #     and the takeover, PLAY_AFTER_S beyond; stops early if the ball goes dead or tracking drops
-    play_end = min(n - 1, take_k + int(PLAY_AFTER_S * FPS_RAW), rec + int(PLAY_MAX_S * FPS_RAW))
+    rec_f = fidx[rec_idx]
+    play_end = min(n - 1, take_k + int(PLAY_AFTER_S * FPS_RAW), int(rec_f + PLAY_MAX_S * FPS_RAW))
     play = []
-    for j in range(int((play_end - rec) // step) + 1):
-        f = rec + step * j
+    for j in range(int((play_end - rec_f) // step) + 1):
+        f = rec_f + step * j
         lo_ = int(math.floor(f))
         hi_ = min(lo_ + 1, n - 1)
         if j > 0 and (not alive[lo_] or not alive[hi_] or np.isnan(ball[lo_:hi_ + 1]).any()
@@ -651,7 +661,7 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
             p = norm(interp(xy[:, c], f))
             pl.append(dict(pid=pid_of(c), num=tr.jerseys[c], team='att' if tr.teams[c] == team else 'def',
                            x=round(float(p[0]), 1), y=round(float(p[1]), 1)))
-        play.append(dict(t=round((n_before + j) / FPS_OUT, 1),
+        play.append(dict(t=round((rec_idx + j) / FPS_OUT, 1),
                          ball=dict(x=round(float(bp[0]), 1), y=round(float(bp[1]), 1),
                                    z=round(max(0.0, float(b3[2])), 1)),
                          players=pl))
@@ -671,7 +681,8 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
         schema_version=SCHEMA_VERSION, id=stable_id,
         match_id=m.match_id, period=per, clock=f'{secs // 60:02d}:{secs % 60:02d}',
         frames=frames, you_pid=pid_of(cb), passer_pid=pid_of(ca),
-        pass1_frame_index=pass1_idx, reception_frame_index=n_before, hold_s=round(hold, 2),
+        pass1_frame_index=pass1_idx, reception_frame_index=rec_idx, decision_frame_index=dec_idx,
+        hold_s=round(hold, 2),
         actual=dict(target_pid=pid_of(tr.col[target]) if target else None,
                     intended_pid=intended,
                     end=dict(x=round(float(take_pos[0]), 1), y=round(float(take_pos[1]), 1)),
@@ -689,8 +700,8 @@ def build_candidate(m, tr, p1, p2, ev_start, offsets, skips):
                     taker=cols.index(take_col) if take_col is not None and take_col in cols else None,
                     take_pos=take_pos, max_z=max_z,
                     intended=next((k for k, c in enumerate(cols) if pid_of(c) == intended), None)),
-        _play=dict(schema_version=SCHEMA_VERSION, id=stable_id, frames=play, kick_index=round((kick2 - rec) / step, 1),
-                   take_index=round((take_k - rec) / step, 1)),
+        _play=dict(schema_version=SCHEMA_VERSION, id=stable_id, frames=play, kick_index=dec_idx - rec_idx,
+                   take_index=round((take_k - rec_f) / step, 1)),
         _frame=int(tr.n0[per] + rec),
     )
 
@@ -708,7 +719,7 @@ def too_close(c, others):
     return any(mid == c['match_id'] and abs(fr - c['_frame']) < MIN_GAP_S * FPS_RAW for mid, fr in others)
 
 
-def check_with_game(here, batch, work_dir):
+def check_with_game(here, batch, work_dir, max_hold_s=MAX_HOLD_S):
     """Write a batch of candidates as moment files and run the game's checker on them.
     Returns {id: report} (report = ok, problems, difficulty, stats; see scripts/check_moments.ts)."""
     for f in glob(os.path.join(work_dir, '*.json')):
@@ -719,12 +730,12 @@ def check_with_game(here, batch, work_dir):
         with open(os.path.join(work_dir, f"{c['id']}.play.json"), 'w', encoding='utf-8') as fh:
             json.dump(c['_play'], fh, ensure_ascii=False, separators=(',', ':'))
     res = os.path.join(work_dir, 'result.json.out')
-    run_node(here, 'scripts/check_moments.ts', work_dir, '--json', res, '--quiet', check=False)
+    run_node(here, 'scripts/check_moments.ts', work_dir, '--json', res, '--max-hold-s', max_hold_s, '--quiet', check=False)
     with open(res, encoding='utf-8') as fh:
         return {r['id']: r for r in json.load(fh)['moments']}
 
 
-def select(here, cands, matches, n, seed, existing, work_dir, on_reject):
+def select(here, cands, matches, n, seed, existing, work_dir, on_reject, max_hold_s=MAX_HOLD_S):
     """Pick n moments that pass the game's checks, with a balanced difficulty mix.
 
     Candidates are taken in a seeded random order (pressured ones first: >= 3 teammates within 35 m
@@ -780,7 +791,7 @@ def select(here, cands, matches, n, seed, existing, work_dir, on_reject):
     while len(chosen) < n and i < len(pool):
         batch = pool[i:i + CHECK_BATCH]
         i += len(batch)
-        got = check_with_game(here, batch, work_dir)
+        got = check_with_game(here, batch, work_dir, max_hold_s)
         for c in batch:
             r = got.get(c['id'])
             if r is None or not r['ok']:
@@ -811,7 +822,7 @@ def select(here, cands, matches, n, seed, existing, work_dir, on_reject):
 # QA and previews
 # ----------------------------------------------------------------------------
 def draw_preview(mom, rep, path):
-    """Reception frame with the pro's pass (yellow), the game's best option (dashed) and the taker's run."""
+    """Decision frame with the pro's pass (yellow), the game's best option (dashed) and the taker's run."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -830,7 +841,7 @@ def draw_preview(mom, rep, path):
         ax.add_patch(Arc((x0 + s * 11, PITCH_Y / 2), 18.3, 18.3, theta1=-53 if s == 1 else 127,
                          theta2=53 if s == 1 else 233, **lc))
 
-    rf = mom['frames'][mom['reception_frame_index']]
+    rf = mom['frames'][mom['decision_frame_index']]
     # ball path of pass 1
     p1 = slice(mom['pass1_frame_index'], mom['reception_frame_index'] + 1)
     bx = [f['ball']['x'] for f in mom['frames'][p1]]
@@ -869,7 +880,7 @@ def draw_preview(mom, rep, path):
     outcome = ('completed' if mom['actual']['success'] else 'FAILED') + f" ({mom['actual']['outcome']})"
     ax.set_title(f"{mom['id']}  ·  {rep['difficulty']}  ·  {verdict}", fontsize=13, weight='bold')
     space = ' into space' if best['intoSpace'] else ''
-    ax.text(0, -2.4, f"{mom['match_id']}  P{mom['period']} {mom['clock']}  ·  you = #{you['num']}  ·  "
+    ax.text(0, -2.4, f"{mom['match_id']}  P{mom['period']} {mom['clock']}  ·  you = #{you['num']} (held {mom['hold_s']:.1f} s)  ·  "
                      f"pressure {rep['parts']['pressure']} m  ·  actual pass {outcome}  ·  best #{best['num']}{space} "
                      f"(value {best['value']}, {round(100 * best['p'])}%)   →  attacking", fontsize=8, color='white', va='center')
     from matplotlib.lines import Line2D
@@ -915,6 +926,8 @@ def main():
     ap.add_argument('--n', type=int, default=30)
     ap.add_argument('--seed', type=int, default=7)
     ap.add_argument('--workers', type=int, default=2)
+    ap.add_argument('--max-hold-s', type=float, default=MAX_HOLD_S,
+                    help='only moments where the receiver passed within this many seconds (max_hold_s)')
     args = ap.parse_args()
 
     matches = discover_matches(args.data)
@@ -944,7 +957,7 @@ def main():
                 print(f'  ! {m.match_id} P{per}: tracking direction disagrees with kick-off TeamLeft')
         offsets = estimate_offsets(tr, evs, ev_start)
         for p1, p2 in pass_pairs(evs, skips):
-            c = build_candidate(m, tr, p1, p2, ev_start, offsets, skips)
+            c = build_candidate(m, tr, p1, p2, ev_start, offsets, skips, args.max_hold_s)
             if c is not None:
                 cands.append(c)
                 per_match_cands[m.match_id] += 1
@@ -993,7 +1006,7 @@ def main():
             reject_reasons[re.sub(r'#\d+|-?\d+(\.\d+)?%?|\(.*?\)', '…', p.split(': ', 1)[-1])[:90]] += 1
 
     print(f'Checking candidates with the game (scripts/check_moments.ts), {CHECK_BATCH} at a time...')
-    chosen, reports = select(here, cands, matches, args.n, args.seed, existing, work, on_reject)
+    chosen, reports = select(here, cands, matches, args.n, args.seed, existing, work, on_reject, args.max_hold_s)
     import shutil
     shutil.rmtree(work, ignore_errors=True)
 

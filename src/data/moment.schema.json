@@ -4,10 +4,10 @@
   "title": "Scan & Play moment",
   "description": "One playable moment: raw facts only (tracking frames, the real pass and its outcome, match context, names). Everything the game judges (pass values, best option, difficulty, risk, feedback) is computed by the game at load time from these facts and src/game/model.config.ts. Coordinates: metres on a 105 x 68 pitch, origin bottom-left, the attacking team always attacks left -> right (+x). Player ids: A<jersey> = attacking team, D<jersey> = defending team.",
   "type": "object",
-  "required": ["schema_version", "id", "match_id", "period", "clock", "frames", "you_pid", "passer_pid", "pass1_frame_index", "reception_frame_index", "actual", "context", "names"],
+  "required": ["schema_version", "id", "match_id", "period", "clock", "frames", "you_pid", "passer_pid", "pass1_frame_index", "reception_frame_index", "decision_frame_index", "actual", "context", "names"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": 1, "description": "Version of this contract. The game skips moments with a version it does not know." },
+    "schema_version": { "const": 2, "description": "Version of this contract. The game skips moments with a version it does not know. 2 = adds decision_frame_index (the frame the pro played pass 2: every judgement is made there)." },
     "id": { "type": "string", "pattern": "^[A-Za-z0-9-]+-[0-9]+$", "description": "Stable id <match_id>-<reception_frame>: the DFL tracking frame number (N) at which 'you' receive the ball. Also the file name (<id>.json) and the key for saved progress." },
     "match_id": { "type": "string", "minLength": 1 },
     "period": { "enum": [1, 2] },
@@ -15,14 +15,15 @@
     "frames": {
       "type": "array",
       "minItems": 2,
-      "description": "10 fps frames from the lead-in before pass 1 to just after the reception. Every frame lists the same players (frame 0 defines the roster).",
+      "description": "10 fps frames from the lead-in before pass 1 to just after the decision frame (pass 2), aligned so the decision lands exactly on a frame. Every frame lists the same players (frame 0 defines the roster).",
       "items": { "$ref": "#/$defs/frame" }
     },
     "you_pid": { "$ref": "#/$defs/pid", "description": "The player on the ball (you): receives pass 1 and makes the decision." },
     "passer_pid": { "$ref": "#/$defs/pid", "description": "Who played pass 1 to you." },
     "pass1_frame_index": { "type": "integer", "minimum": 0, "description": "Frame index at which pass 1 is kicked." },
-    "reception_frame_index": { "type": "integer", "minimum": 1, "description": "Frame index at which you receive the ball: the decision moment (the screen goes dark)." },
-    "hold_s": { "type": "number", "minimum": 0, "description": "Optional. How long the pro held the ball before pass 2 (s). Informational only." },
+    "reception_frame_index": { "type": "integer", "minimum": 1, "description": "Frame index at which you receive the ball (display only: the hold phase starts here)." },
+    "decision_frame_index": { "type": "integer", "minimum": 1, "description": "Frame index at which the pro really played pass 2: the decision moment. The screen goes dark here, and options, the best option, the pro's pass value, offside, risk, the race model and tap snapping are all judged on this frame. >= reception_frame_index; equal for a one-touch pass." },
+    "hold_s": { "type": "number", "minimum": 0, "description": "Optional. How long the pro held the ball before pass 2 (s, measured at 25 fps; the frames give it to 0.1 s as decision_frame_index - reception_frame_index). Informational only." },
     "actual": {
       "type": "object",
       "description": "What the pro really did (pass 2) and what happened to it, from event + tracking data.",
@@ -36,7 +37,7 @@
         "success": { "type": "boolean", "description": "Event feed: pass completed." },
         "outcome": { "enum": ["received", "intercepted", "out", "loose"], "description": "From tracking: who took the ball over." },
         "taker": {
-          "description": "Who took the ball over and his run from the reception frame to the takeover (5 fps), or null (out / loose).",
+          "description": "Who took the ball over and his run from the decision frame (pass 2) to the takeover (5 fps), or null (out / loose).",
           "oneOf": [
             { "type": "null" },
             {
@@ -45,7 +46,7 @@
               "additionalProperties": false,
               "properties": {
                 "pid": { "$ref": "#/$defs/pid" },
-                "t": { "type": "number", "minimum": 0, "description": "Seconds after the reception." },
+                "t": { "type": "number", "minimum": 0, "description": "Seconds after pass 2 (the decision frame)." },
                 "run": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } } }
               }
             }
@@ -132,10 +133,10 @@
       "required": ["schema_version", "id", "frames", "kick_index", "take_index"],
       "additionalProperties": false,
       "properties": {
-        "schema_version": { "const": 1 },
+        "schema_version": { "const": 2 },
         "id": { "type": "string" },
         "frames": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/frame" } },
-        "kick_index": { "type": "number", "minimum": 0, "description": "Pass 2 kicked, in frames after the reception." },
+        "kick_index": { "type": "number", "minimum": 0, "description": "Pass 2 kicked, in frames after the reception (= decision_frame_index - reception_frame_index)." },
         "take_index": { "type": "number", "minimum": 0, "description": "Ball taken over, in frames after the reception." }
       }
     }

@@ -27,6 +27,8 @@ export interface Profile {
   proMode: boolean // training scan phase in 3D first-person
   /** lifetime counts for the Statistics screen (lib/stats.ts) */
   stats: Stats
+  /** the tutorial was played to the end (Home stops suggesting it) */
+  tutorialDone?: boolean
 }
 
 const EMPTY: Profile = {

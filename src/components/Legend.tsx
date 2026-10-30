@@ -1,9 +1,9 @@
 import type { RoundResult } from '../game/evaluate'
 
 /** What the lines on the pitch mean. With a result: only what that reveal draws (renderer.ts
- *  drawReveal; `active` = the Brave / Danger rows shown on the pitch). Without one (before the pass):
+ *  drawReveal: the brave option and the danger lines are always drawn). Without one (before the pass):
  *  every kind of line. */
-export function LineLegend({ result: r, active = [] }: { result?: RoundResult; active?: string[] }) {
+export function LineLegend({ result: r }: { result?: RoundResult }) {
   if (!r)
     return (
       <div className="legend-list">
@@ -18,8 +18,8 @@ export function LineLegend({ result: r, active = [] }: { result?: RoundResult; a
         <small>The lines appear after your pass.</small>
       </div>
     )
-  const brave = active.includes('brave')
-  const danger = active.some((k) => k[0] === 't')
+  const brave = !!r.brave
+  const danger = r.threats.length > 0
   const items: [string, string][] = [
     ...(r.tap ? ([['mine', 'Your pass']] as [string, string][]) : []),
     ['pro', "Pro's pass"],
@@ -32,7 +32,6 @@ export function LineLegend({ result: r, active = [] }: { result?: RoundResult; a
     ...((brave ? [['brave', 'Brave option']] : []) as [string, string][]),
     ...((danger ? [['danger', 'Danger: could cut it out']] : []) as [string, string][]),
   ]
-  const more = (r.brave && !brave) || (r.threats.length > 0 && !danger)
   return (
     <div className="legend-list">
       {items.map(([k, label]) => (
@@ -40,7 +39,6 @@ export function LineLegend({ result: r, active = [] }: { result?: RoundResult; a
           {label}
         </span>
       ))}
-      {more && <small>Brave and danger lines: tap their rows in Why?</small>}
     </div>
   )
 }

@@ -40,10 +40,10 @@ export function GuidePanel({
       <h3>How to play</h3>
       <ol className="how">
         <li>
-          <b>Scan</b>: while the ball comes, look around: drag on the pitch, hold the dial, or use the arrow keys
+          <b>Scan</b>: while the ball comes – and while it is at your feet – look around: drag on the pitch, hold the dial, or use the arrow keys
         </li>
         <li>
-          <b>Remember</b>: the screen goes dark when you receive the ball
+          <b>Remember</b>: the screen goes dark when you have to pass – at the moment the pro passed
         </li>
         <li>
           <b>Pass</b>: click a teammate or into space within 2 s · double-click for a lofted pass
@@ -56,7 +56,7 @@ export function GuidePanel({
           <b>Decision {pct(WEIGHTS.decision)}</b>: how good your pass was against the best option
         </li>
         <li>
-          <b>Scan {pct(WEIGHTS.scan)}</b>: looking around just before the ball arrives, and spotting the best option
+          <b>Scan {pct(WEIGHTS.scan)}</b>: looking around just before you have to pass, and spotting the best option
         </li>
         <li>
           <b>Memory {pct(WEIGHTS.memory)}</b>: how close your click was to where your teammate really stood

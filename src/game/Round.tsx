@@ -14,6 +14,8 @@ import type { MomentData } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
 import { ProScan3D } from '../three/lazy'
+import { Coach } from '../components/Coach'
+import type { CoachStep, CoachWhen } from './tutorial'
 import type { Clock } from '../three/Players'
 
 export interface RoundSettings {
@@ -31,11 +33,13 @@ const INTRO_MS = 1300
 const LOOK_FADE_IN_MS = 80
 const LOOK_FADE_OUT_MS = 160
 const REVEAL_ANIM_MS = 900
-const DARKEN_MS = 300 // vision shrinking to "you" at reception
+const DARKEN_MS = 300 // vision shrinking to "you" at the decision frame
 const LIFT_MS = 350 // darkness lifting at the reveal
 const FRAME_MARGIN_M = 6 // space kept around the action when the reveal camera frames it
 /** a touch screen: "Tap anywhere to start" rather than "Click anywhere or press Enter" */
 const TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+/** a hold this short (s) is a one-touch pass: no hold phase, the screen goes dark at the reception */
+const HOLD_MIN_S = 0.15
 const REPLAY_LEAD_S = 1 // the 2D replay starts this long before the reception
 const REPLAY_HOLD_MS = 1200 // ...and holds the last frame this long before returning to the reveal
 /** the reveal camera may zoom out this far: with the tall results sheet only a strip of pitch is left */
@@ -46,18 +50,12 @@ export const RoundControls = createContext<{
   replay2D: (who: PlayStory['who']) => void
   stopReplay: () => void
   replaying: boolean
-  /** optional pitch layers (a tapped Brave / Danger row in the Why? tab) */
-  setLayers: (show: RevealDraw['show']) => void
   /** the open "what the lines mean" popover (the ⓘ in the header): the results sheet fills it */
   legendEl: HTMLElement | null
-  /** the layer a Why? row stands for: 'brave', 't<opponent index>' (his danger line) or null */
-  layerOf: (point: string) => string | null
 }>({
   replay2D: () => {},
   stopReplay: () => {},
   replaying: false,
-  setLayers: () => {},
-  layerOf: () => null,
   legendEl: null,
 })
 
@@ -74,6 +72,8 @@ interface Props {
   desk?: boolean
   /** phones: the rules toggle in the header (big screens have it at the screen's top right) */
   guide?: { open: boolean; toggle: () => void }
+  /** a tutorial round: its coach steps (game/tutorial.ts), "1/3", and leaving the tutorial */
+  tutorial?: { steps: CoachStep[]; progress: string; onSkip: () => void }
 }
 
 interface Api {
@@ -93,17 +93,23 @@ interface Api {
   panBy: (dx: number, dy: number) => void
   recenter: () => void
   stopReplay: () => void
-  setLayers: (show: RevealDraw['show']) => void
+  /** tutorial: the current step is done */
+  coachNext: () => void
+  /** tutorial: a player's circle on screen (client px), for the coach's ring; null at the reveal */
+  pitchPoint: (t: 'you' | 'best') => { x: number; y: number; r: number } | null
 }
 
-export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
+export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide, tutorial }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dialRef = useRef<HTMLDivElement>(null)
   const dialTimeRef = useRef<HTMLElement>(null)
   const [phase, setPhase] = useState<Phase>('intro')
+  const [holding, setHolding] = useState(false) // the hold phase: ball at your feet, still scanning
   const [started, setStarted] = useState(false) // the player started the round
+  const [coach, setCoach] = useState<CoachStep | null>(null) // the tutorial step on screen
+  const steps = tutorial?.steps ?? []
   const [legendOpen, setLegendOpen] = useState(false)
   const [legendEl, setLegendEl] = useState<HTMLDivElement | null>(null)
   // 2D replay: -1 = off, 0 = ball coming, 1 = on the ball, 2 = pass travelling, 3 = taken over
@@ -127,6 +133,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
   onResultRef.current = onResult
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const stepsRef = useRef(steps)
+  stepsRef.current = steps
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -135,7 +143,10 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
     const r = new PitchRenderer(canvas, track)
     const pos = new Float32Array(track.n * 2)
     const ball = new Float32Array(2)
-    const bestIdx = findBestPass(track).idx // may be a pass into space: the receiver is who you should spot
+    const best = findBestPass(track)
+    const bestIdx = best.idx // may be a pass into space: the receiver is who you should spot
+    // where the best pass goes (the tutorial's "tap here" ring)
+    const bestEnd: [number, number] = best.intoSpace ? best.end : posAt(track, track.dec, best.idx)
     sample(track, 0, pos, ball)
     const startDir = dirTo(pos[track.youIdx * 2], pos[track.youIdx * 2 + 1], ball[0], ball[1])
     const g = {
@@ -150,8 +161,12 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       view: { k: 1, tx: 0, ty: 0 } as View,
       settled: false, // reveal animation finished: stop redrawing every frame
       kicked: false,
+      received: false, // pass 1 reached you (the hold phase starts, if the pro held the ball)
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       waitForStart: true, // nothing moves until the player presses "Start scanning"
+      // tutorial: the step being shown (index into its steps), when it appeared, and the game paused for it
+      coach: { idx: 0, on: false, at: 0 },
+      paused: false,
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       framed: [] as number[], // reveal: the players the headline and detail name (the camera keeps them in view)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
@@ -175,17 +190,54 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       g.t0 = now
       setPhase(p)
     }
-    const before = () => (track.rec - g.f) / FPS
+    // ---- tutorial: show each coach step when its moment comes, pause the game for it if it says so
+    const ORDER: Record<Phase, number> = { intro: 0, approach: 1, decide: 2, reveal: 3 }
+    const WHEN: Record<CoachWhen, number> = { intro: 0, approach: 1, received: 1, decide: 2, reveal: 3 }
+    const coachStep = () => (g.coach.on ? (stepsRef.current[g.coach.idx] ?? null) : null)
+    const coachNext = () => {
+      if (!stepsRef.current[g.coach.idx]) return
+      g.coach = { idx: g.coach.idx + 1, on: false, at: 0 }
+      g.paused = false
+      setCoach(null)
+    }
+    const coachTick = (now: number) => {
+      const st = stepsRef.current[g.coach.idx]
+      if (!st) return
+      if (!g.coach.on) {
+        // its moment has passed (or never comes: no hold phase in a one-touch moment): skip it
+        if (ORDER[g.phase] > WHEN[st.when] || (st.when === 'received' && g.received && holdFrames === 0)) return coachNext()
+        const due =
+          st.when === 'intro'
+            ? !g.waitFor3D
+            : st.when === 'approach'
+              ? g.phase === 'approach' && g.f >= 4
+              : st.when === 'received'
+                ? g.phase === 'approach' && g.received
+                : st.when === 'decide'
+                  ? g.phase === 'decide'
+                  : g.phase === 'reveal' && now - g.t0 >= REVEAL_ANIM_MS
+        if (!due) return
+        g.coach = { idx: g.coach.idx, on: true, at: now }
+        if (st.pause) g.paused = true
+        setCoach(st)
+      } else if (st.done === 'auto' && (now - g.coach.at > 4500 || ORDER[g.phase] > WHEN[st.when] || (st.when === 'approach' && g.received && holdFrames > 0)))
+        coachNext()
+    }
+
+    // every judgement is made at the decision frame: where the pro really passed (track.dec)
+    const before = () => (track.dec - g.f) / FPS
+    const holdFrames = (track.dec - track.rec) / FPS >= HOLD_MIN_S ? track.dec - track.rec : 0
     const stopLook = () => {
       g.look.active = false
       g.look.rec = null
     }
     const finish = (tap: [number, number] | null, now: number, lofted = false) => {
+      if (coachStep()?.done === 'pass') coachNext()
       if (g.pending) clearTimeout(g.pending.timer)
       g.pending = null
-      g.f = track.rec
+      g.f = track.dec
       stopLook()
-      sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
+      sample(track, track.dec, pos, ball) // reveal the TRUE positions when you had to pass
       const res = evaluate(track, { tap, scans: g.scans, lofted })
       g.top = involved(track, res)
       g.framed = named(track, [res.headline, res.detail])
@@ -204,7 +256,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           run: res.space.team ? { pts: res.space.run, team: res.space.team } : null,
         },
         threats: res.threats,
-        show: { brave: false, threats: [] },
+        // the brave option and every high-risk line are on the pitch from the start
+        show: { brave: !!res.brave, threats: res.threats.map((t) => t.idx) },
         offsideV: res.offsideV,
         brave: res.brave && { end: res.brave.end, run: res.brave.run, lofted: res.brave.lofted },
       }
@@ -237,7 +290,13 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 
     api.current = {
       lookStart(dir) {
-        if (g.phase !== 'approach' || g.look.active || g.budget <= 0) return
+        // the hold phase: the ball is at your feet, you may look around until the pro passes
+        const holdingNow = g.received && holdFrames > 0
+        if (g.phase !== 'approach' || g.look.active || (g.budget <= 0 && !holdingNow)) return
+        // tutorial: while a step holds the game, only the "look around" step lets you look
+        const st = coachStep()
+        if (g.paused && st?.done !== 'scan') return
+        if (st?.done === 'scan') coachNext()
         g.look.active = true
         if (dir !== null) g.look.target = dir
         g.look.rec = { dir: g.look.target, startBefore: before(), endBefore: before(), sawBestBefore: null }
@@ -306,6 +365,10 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       /** the player clicked / tapped anywhere or pressed Enter: the ball starts rolling */
       start() {
         if (g.phase !== 'intro' || !g.waitForStart) return
+        // tutorial: read the welcome card first; the "tap to start" step ends here
+        const st = coachStep()
+        if (st && st.done !== 'start') return
+        if (st) coachNext()
         g.waitForStart = false
         g.t0 = performance.now() - INTRO_MS // straight into the approach (Pro mode still waits for 3D)
         sound.whistle(1, 0.22)
@@ -313,7 +376,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       },
       replay(played, kick, take) {
         if (g.phase !== 'reveal') return
-        // frame the whole play: the ball's path, you and whoever ends up with it
+        // frame the whole play: the ball's path, you and whoever ends up with it (from just before
+        // the reception, so the hold before the pass is in it)
         const f0 = Math.max(0, played.rec - REPLAY_LEAD_S * FPS)
         const end = played.nFrames - 1
         const us: number[] = []
@@ -332,15 +396,17 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         g.replay = { tr: played, f: f0, end, kick, take, hold: 0, stage: -1, view }
         sound.whistle(1, 0.12)
       },
-      setLayers(show) {
-        if (!g.reveal) return
-        g.reveal.show = show
-        g.settled = false
+      coachNext,
+      pitchPoint(t) {
+        if (g.phase === 'reveal') return null // the reveal camera moves the pitch
+        const rect = canvas.getBoundingClientRect()
+        const [u, v] = t === 'you' ? [pos[track.youIdx * 2], pos[track.youIdx * 2 + 1]] : bestEnd
+        return { x: rect.left + r.X(u), y: rect.top + r.Y(v), r: 3.2 * r.s }
       },
       stopReplay() {
         if (!g.replay) return
         g.replay = null
-        sample(track, track.rec, pos, ball) // back to the reveal picture
+        sample(track, track.dec, pos, ball) // back to the reveal picture
         g.settled = false
         setReplayStage(-1)
       },
@@ -355,22 +421,33 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       raf = requestAnimationFrame(loop)
       const dt = Math.min(50, now - last)
       last = now
+      coachTick(now)
       if (g.phase === 'intro' && (g.waitFor3D || g.waitForStart)) g.t0 = now
       if (g.phase === 'intro' && now - g.t0 >= INTRO_MS) go('approach', now)
       if (g.phase === 'approach') {
-        g.f += (dt / 1000) * FPS * S.speed
+        if (!g.paused) g.f += (dt / 1000) * FPS * S.speed
         if (!g.kicked && g.f >= track.pass1) {
           g.kicked = true
           sound.kick()
         }
-        if (g.f >= track.rec) {
-          g.f = track.rec
-          stopLook()
+        if (!g.received && g.f >= track.rec) {
+          g.received = true
           sound.kick(0.4) // first touch
           vibrate(25)
+          if (holdFrames > 0) setHolding(true) // the ball stays at your feet: keep scanning
+        }
+        if (g.f >= track.dec) {
+          // the moment the pro passed: the screen goes dark
+          g.f = track.dec
+          stopLook()
+          if (holdFrames > 0) {
+            setHolding(false)
+            vibrate(15)
+          }
           go('decide', now)
         }
       }
+      if (g.phase === 'decide' && g.paused) g.t0 += dt // the clock waits for the coach
       if (g.phase === 'decide' && now - g.t0 >= S.decideMs) finish(g.pending?.q ?? null, now) // a pending tap still counts
       if (g.phase !== 'reveal') sample(track, g.f, pos, ball)
       clock.current.f = g.f
@@ -383,14 +460,16 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         const yv = pos[track.youIdx * 2 + 1]
         const want = L.active ? L.target : dirTo(yu, yv, ball[0], ball[1])
         L.dir = turnTowards(L.dir, want, (HEAD_TURN * dt) / 1000)
+        // scanning in the hold phase is free: it never runs out before the pro's pass (the decision frame)
+        const holdingNow = g.received && holdFrames > 0
         if (L.active) {
-          g.budget -= dt
+          if (!holdingNow) g.budget -= dt
           L.alpha = Math.min(1, L.alpha + dt / LOOK_FADE_IN_MS)
           if (L.rec) {
             L.rec.endBefore = before()
             if (bestInCone(L.dir)) L.rec.sawBestBefore = before()
           }
-          if (g.budget <= 0) {
+          if (g.budget <= 0 && !holdingNow) {
             g.budget = 0
             stopLook()
             vibrate(30)
@@ -400,11 +479,12 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         }
         if (dial) {
           dial.style.setProperty('--head', `${(L.dir * 180) / Math.PI}deg`)
-          const b = Math.round(g.budget / 100) // update the DOM only when the tenth changes
+          const b = holdingNow ? -1 : Math.round(g.budget / 100) // update the DOM only when the tenth changes
           if (b !== shownBudget) {
             shownBudget = b
-            dial.style.setProperty('--budget', String(g.budget / S.scanBudgetMs))
-            if (dialTime) dialTime.textContent = `${(g.budget / 1000).toFixed(1)}s`
+            // hold phase: free scanning until the pass (a full ring, ∞)
+            dial.style.setProperty('--budget', holdingNow ? '1' : String(g.budget / S.scanBudgetMs))
+            if (dialTime) dialTime.textContent = holdingNow ? '∞' : `${(g.budget / 1000).toFixed(1)}s`
           }
         }
       }
@@ -458,6 +538,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         headDir: g.look.dir,
         look: g.look.alpha,
         decideLeft: g.phase === 'decide' ? Math.max(0, 1 - (now - g.t0) / S.decideMs) : 1,
+        holdLeft: g.phase === 'approach' && g.received && holdFrames > 0 ? Math.max(0, Math.min(1, (track.dec - g.f) / holdFrames)) : null,
         aim: g.phase === 'decide' ? (g.pending?.q ?? null) : null,
         reveal: g.reveal,
         view: g.view,
@@ -544,7 +625,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       className={`round phase-${phase}`}
       data-moment={track.m.id}
       // the round starts on a click / tap anywhere (the pitch, the dial...) except the header's buttons
-      onPointerDown={(e) => phase === 'intro' && !(e.target as HTMLElement).closest('button, .legend-pop') && api.current?.start()}
+      onPointerDown={(e) => phase === 'intro' && !(e.target as HTMLElement).closest('button, .legend-pop, .coach-card') && api.current?.start()}
     >
       <header className="hud-top">
         <span className="chip">{label}</span>
@@ -603,7 +684,12 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           </div>
         )}
         {replayError && <div className="replay2d-bar error">Replay unavailable – {replayError}</div>}
-        {phase === 'decide' && (
+        {phase === 'approach' && holding && !coach && (
+          <div className="overlay hold-hint" role="status">
+            Ball at your feet – keep scanning
+          </div>
+        )}
+        {phase === 'decide' && !coach && (
           <div className="overlay banner">
             PASS! Tap a teammate – or the space
             <small>tap = along the ground · double-tap = lofted</small>
@@ -622,7 +708,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         {proMode && phase === 'intro' && (
           <div className="overlay intro pro-intro">
             <div className="big">Pro mode</div>
-            <div className="sub">Look around before the ball arrives</div>
+            <div className="sub">Look around before you have to pass</div>
             <Who m={m} />
             {startHint}
           </div>
@@ -632,7 +718,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         {/* the controller keeps its place until the reveal (the pitch doesn't resize while you play);
             at the reveal it goes and the pitch grows under the results sheet */}
         <div className="scan-controls" style={phase === 'reveal' || proMode ? { visibility: 'hidden' } : undefined}>
-          <span className="dial-hint">{phase === 'approach' ? 'Hold & turn to scan' : phase === 'decide' ? 'Pass!' : ''}</span>
+          <span className="dial-hint">{phase === 'approach' ? (holding ? 'Keep scanning' : 'Hold & turn to scan') : phase === 'decide' ? 'Pass!' : ''}</span>
           <ScanDial
             disabled={phase !== 'approach'}
             onStart={(d) => api.current?.lookStart(d)}
@@ -644,20 +730,21 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           <span className="dial-hint right">{settings.scanBudgetMs / 1000}s scan time</span>
         </div>
       </footer>
+      {tutorial && coach && (
+        <Coach
+          step={coach}
+          progress={tutorial.progress}
+          pitchPoint={(t) => api.current?.pitchPoint(t) ?? null}
+          onNext={() => api.current?.coachNext()}
+          onSkip={tutorial.onSkip}
+        />
+      )}
       {phase === 'reveal' && (
         <RoundControls.Provider
           value={{
             replaying: replayStage >= 0,
             stopReplay,
-            setLayers: (show) => api.current?.setLayers(show),
             legendEl,
-            layerOf: (point) => {
-              const res = lastResult.current
-              if (!res) return null
-              if (res.brave && /^brave option/i.test(point)) return 'brave'
-              const t = res.threats.find((t) => new RegExp(`(?<![A-Za-z])[Rr]ed #${track.nums[t.idx]}(?!\\d)`).test(point))
-              return t ? `t${t.idx}` : null
-            },
             replay2D: (who) => {
               const tok = ++replayTok.current
               setReplayError('')
@@ -692,12 +779,13 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 /** The box the reveal camera frames (u0, v0, u1, v1 in metres): every arrow and run, and every
  *  player the reveal is about (`top`), with room around them. */
 export function revealBox(track: Track, R: RevealDraw, players: number[]): [number, number, number, number] {
-  const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), [track.ball[track.rec * 2], track.ball[track.rec * 2 + 1]], R.proEnd]
-  for (const i of players) pts.push(posAt(track, track.rec, i))
+  const f = track.dec
+  const pts: [number, number][] = [posAt(track, f, track.youIdx), [track.ball[f * 2], track.ball[f * 2 + 1]], R.proEnd]
+  for (const i of players) pts.push(posAt(track, f, i))
   for (const t of R.threats) if (R.show.threats.includes(t.idx)) pts.push(t.from, t.at)
-  if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, R.best.ring, ...(R.best.alone ? (R.best.run ?? []) : []))
+  if (R.bestIdx >= 0) pts.push(posAt(track, f, R.bestIdx), R.best.end, R.best.ring, ...(R.best.alone ? (R.best.run ?? []) : []))
   if (R.brave && R.show.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
-  if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
+  if (R.chosenIdx >= 0) pts.push(posAt(track, f, R.chosenIdx))
   if (R.tap) pts.push(R.tap)
   if (R.run) pts.push(...R.run.pts)
   if (R.space) pts.push(R.space.end, ...(R.space.run?.pts ?? []))

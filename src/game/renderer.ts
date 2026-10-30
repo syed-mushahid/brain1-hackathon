@@ -19,6 +19,7 @@ const C = {
   best: '#ffffff',
   steal: '#ff6464',
   brave: '#ff9f43',
+  hold: 'rgba(34,227,255,0.9)', // the hold phase countdown ring (the scan colour: keep scanning)
 }
 
 export interface RevealDraw {
@@ -59,6 +60,8 @@ export interface Scene {
   /** 0..1 opacity of the look cone (0 = not scanning) */
   look: number
   decideLeft: number // 1 -> 0 during the decision window
+  /** the hold phase (ball at your feet before the pro passed): 1 -> 0 until the screen goes dark, else null */
+  holdLeft?: number | null
   /** decide: a first tap waiting to see if a second one (lofted) follows */
   aim?: [number, number] | null
   /** transition progress 0..1: decide = vision shrinking to "you", reveal = darkness lifting */
@@ -321,6 +324,18 @@ export class PitchRenderer {
       }
     } else {
       this.drawBall(bu, bv)
+      // hold phase: a small ring around "you" runs down until the screen goes dark
+      if (sc.holdLeft !== null && sc.holdLeft !== undefined) {
+        ctx.lineWidth = 0.5 * s
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+        ctx.beginPath()
+        ctx.arc(this.X(yu), this.Y(yv), 4 * s, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.strokeStyle = sc.holdLeft > 0.35 ? C.hold : '#ffb03d'
+        ctx.beginPath()
+        ctx.arc(this.X(yu), this.Y(yv), 4 * s, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * sc.holdLeft)
+        ctx.stroke()
+      }
     }
     this.drawYouRing(yu, yv, sc.time)
   }
