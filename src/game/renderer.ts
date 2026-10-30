@@ -66,8 +66,6 @@ export interface Scene {
   reveal: RevealDraw | null
   /** reveal camera: zoom k and css-px offset, so the action stays clear of the results sheet */
   view?: View
-  /** reveal: canvas height (css px) not covered by the results sheet; labels stay above it */
-  visibleH?: number
   time: number // ms, for pulses
 }
 
@@ -543,82 +541,6 @@ export class PitchRenderer {
       ctx.globalAlpha = 1
     }
     if (R.tap) this.cross(R.tap[0], R.tap[1], R.chosenIdx >= 0 || R.space ? C.mine : '#ff6b3d')
-    if (p > 0.7) this.endLabels(R, yu, yv, at, Math.min(1, (p - 0.7) / 0.2), sc.view ?? { k: 1, tx: 0, ty: 0 }, sc.visibleH ?? this.h)
-  }
-
-  /** "You", "Pro", "Best" (and "Brave" when shown) next to the arrow ends, clear of the receiver's
-   *  ring; labels at the same spot merge ("Pro · Best"). Each goes where it stays on screen (above the
-   *  sheet) and covers the fewest player circles: beyond the end first, then around it. */
-  private endLabels(R: RevealDraw, yu: number, yv: number, at: (i: number) => [number, number], alpha: number, vw: View, visibleH: number): void {
-    const { ctx, s } = this
-    const ends: { pt: [number, number]; parts: [string, string][] }[] = []
-    const add = (pt: [number, number], text: string, color: string) => {
-      const near = ends.find((e) => Math.hypot(e.pt[0] - pt[0], e.pt[1] - pt[1]) < 3.5)
-      if (near) near.parts.push([text, color])
-      else ends.push({ pt, parts: [[text, color]] })
-    }
-    if (R.tap) add(R.chosenIdx >= 0 ? at(R.chosenIdx) : R.space ? R.space.end : R.tap, 'You', C.mine)
-    add(R.proEnd, 'Pro', C.pro)
-    add(R.best.alone ? R.best.end : R.best.ring, 'Best', C.best)
-    if (R.brave && R.show.brave) add(R.brave.end, 'Brave', C.brave)
-    const fs = Math.max(10, 1.3 * s)
-    const sep = ' · '
-    ctx.font = `800 ${fs}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
-    ctx.textBaseline = 'middle'
-    ctx.textAlign = 'left'
-    ctx.globalAlpha = alpha
-    const placed: [number, number, number, number][] = [] // x0, y0, x1, y1 (canvas css px, before the view)
-    const circleR = 1.6 * s
-    for (const e of ends) {
-      const widths = e.parts.map(([t]) => ctx.measureText(t).width)
-      const w = widths.reduce((a, b) => a + b, 0) + ctx.measureText(sep).width * (e.parts.length - 1) + fs
-      const h = fs * 1.5
-      const d = Math.hypot(e.pt[0] - yu, e.pt[1] - yv)
-      const base = d > 0.5 ? Math.atan2(e.pt[1] - yv, e.pt[0] - yu) : -Math.PI / 2
-      let best = { score: Infinity, cx: 0, cy: 0 }
-      ;[0, 1, -1, 2, -2, 3, -3, 4].forEach((step, rank) => {
-        const a = base + (step * Math.PI) / 4
-        const [dx, dy] = [Math.cos(a), Math.sin(a)]
-        const off = 2.6 * s + Math.abs(dy) * (h / 2) + Math.abs(dx) * (w / 2)
-        const cx = this.X(e.pt[0]) + dx * off
-        const cy = this.Y(e.pt[1]) + dy * off
-        const [x0, y0, x1, y1] = [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
-        // on screen (through the camera) and above the results sheet
-        const sx0 = vw.k * x0 + vw.tx
-        const sx1 = vw.k * x1 + vw.tx
-        const sy0 = vw.k * y0 + vw.ty
-        const sy1 = vw.k * y1 + vw.ty
-        let score = rank * 0.5
-        if (sx0 < 2 || sx1 > this.w - 2 || sy0 < 2 || sy1 > visibleH - 2) score += 1000
-        for (let i = 0; i < this.tr.n; i++) {
-          const px = this.X(this.at ? this.at[i * 2] : 0)
-          const py = this.Y(this.at ? this.at[i * 2 + 1] : 0)
-          const nx = Math.max(x0, Math.min(x1, px))
-          const ny = Math.max(y0, Math.min(y1, py))
-          if (Math.hypot(px - nx, py - ny) < circleR) score += 10
-        }
-        for (const [a0, b0, a1, b1] of placed) if (x0 < a1 && x1 > a0 && y0 < b1 && y1 > b0) score += 50
-        if (score < best.score) best = { score, cx, cy }
-      })
-      const { cx, cy } = best
-      placed.push([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2])
-      ctx.fillStyle = 'rgba(10,16,32,0.82)'
-      ctx.beginPath()
-      ctx.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2)
-      ctx.fill()
-      let x = cx - w / 2 + fs / 2
-      e.parts.forEach(([t, col], k) => {
-        if (k > 0) {
-          ctx.fillStyle = 'rgba(255,255,255,0.6)'
-          ctx.fillText(sep, x, cy)
-          x += ctx.measureText(sep).width
-        }
-        ctx.fillStyle = col
-        ctx.fillText(t, x, cy)
-        x += widths[k]
-      })
-    }
-    ctx.globalAlpha = 1
   }
 
   /** The player who won the ball: a ring where he stood, then his run to the ball. */

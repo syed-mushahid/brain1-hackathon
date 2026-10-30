@@ -39,6 +39,8 @@ export interface RoundResult {
   proLofted: boolean
   /** your pass is as good as the best option (within best.asGoodPoints) */
   mineIsBest: boolean
+  /** your pass is the pro's pass (same receiver and spot) - for the player's statistics */
+  mineIsPro: boolean
   /** the pro's pass is as good as the best option (best.ts isProAsGoodAsBest) */
   proAsGood: boolean
   proEnd: [number, number]
@@ -321,6 +323,7 @@ function evaluateRound(tr: Track, input: RoundInput): RoundResult {
     lofted: space ? space.lofted : lofted,
     proLofted: proLoft,
     mineIsBest,
+    mineIsPro,
     proAsGood,
     lost,
     p: myP,

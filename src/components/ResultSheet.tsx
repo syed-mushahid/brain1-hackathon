@@ -1,8 +1,10 @@
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { RoundControls } from '../game/Round'
 import type { RoundResult } from '../game/evaluate'
 import { BreakdownPanel, type Layers, type Tab } from './Breakdown'
 import { Rich } from './Rich'
+import { LineLegend } from './Legend'
 import { scoreTone, WEIGHTS } from '../game/scoring'
 import { loadReplay3D } from '../three/lazy'
 
@@ -55,8 +57,10 @@ interface SheetProps {
   onNext: () => void
   nextLabel: string
   onWatch3D?: (mode: 'eyes' | 'tv', who: 'pro' | 'you') => void
-  /** test mode: a link back home under the buttons */
+  /** a link under the buttons (test mode: back home; training: end the session) */
   exit?: { label: string; onExit: () => void }
+  /** big screens: the whole result in a panel left of the pitch, only Next under it */
+  desk?: boolean
 }
 
 /**
@@ -65,7 +69,7 @@ interface SheetProps {
  *   tall              - a tab's content, scrolling, with Next pinned at the bottom
  * Tapping a tab chip or dragging the handle up opens it tall; × / dragging down / Esc goes back.
  */
-export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: SheetProps) {
+export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk = false }: SheetProps) {
   const { scores } = result
   const brain = useCountUp(scores.brain, 1200, 650)
   const ctl = useContext(RoundControls)
@@ -149,7 +153,10 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
 
   const play = (who: 'pro' | 'you') => {
     setChooser(false)
-    if (ctl.replaying) ctl.stopReplay()
+    if (ctl.replaying) {
+      ctl.stopReplay()
+      if (playing === who) return // the same button again = stop
+    }
     if (in3D && onWatch3D) return onWatch3D('tv', who)
     setPlaying(who)
     ctl.replay2D(who)
@@ -164,6 +171,57 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
   const circ = 2 * Math.PI * R
   const tall = snap === 'tall'
   const height = dragH ?? (tall ? undefined : (compactH ?? undefined))
+  const replayPicks = (
+    <div className="replay-picks">
+      {canSimulate && (
+        <button className={`replay-btn ${playing === 'you' ? 'on' : ''}`} onClick={() => play('you')}>
+          {playing === 'you' ? '■ Stop' : '▶ Your pass'}
+          <small title="Your pass is simulated with the race model; the other players move as they really did.">simulated</small>
+        </button>
+      )}
+      <button className={`replay-btn ${playing === 'pro' ? 'on' : ''}`} onClick={() => play('pro')}>
+        {playing === 'pro' ? '■ Stop' : "▶ Pro's pass"}
+        <small>the real play</small>
+      </button>
+    </div>
+  )
+  const viewSwitch = onWatch3D && (
+    <div className="seg" role="radiogroup" aria-label="View">
+      {[false, true].map((v) => (
+        <button
+          key={String(v)}
+          role="radio"
+          aria-checked={in3D === v}
+          className={in3D === v ? 'on' : ''}
+          onClick={() => {
+            if (v) void loadReplay3D() // start fetching the 3D chunk early
+            setIn3D(v)
+          }}
+        >
+          {v ? '3D · TV camera' : '2D · on the pitch'}
+        </button>
+      ))}
+    </div>
+  )
+  const ring = (
+    <div className="brain-ring" aria-label={`Brain Score ${scores.brain}`}>
+      <svg viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r={R} className="ring-bg" />
+        <circle cx="40" cy="40" r={R} className="ring-fg" strokeDasharray={circ} strokeDashoffset={circ * (1 - brain / 100)} />
+      </svg>
+      <div className="brain-num">{Math.round(brain)}</div>
+      <div className="brain-cap">BRAIN</div>
+    </div>
+  )
+  const bars = (
+    <div className="bars">
+      <Bar label="Decision" weight={WEIGHTS.decision} value={scores.decision} delay={100} />
+      <Bar label="Scan" weight={WEIGHTS.scan} value={scores.scan} delay={250} />
+      <Bar label="Memory" weight={WEIGHTS.memory} value={scores.memory} delay={400} />
+    </div>
+  )
+  // what the lines mean, in the popover under the round's ⓘ (Round.tsx) while it is open
+  const legend = ctl.legendEl && createPortal(<LineLegend result={result} active={active} />, ctl.legendEl)
   const nextButtons = (
     <>
       <button className="cta next-btn" onClick={onNext}>
@@ -176,9 +234,46 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
       )}
     </>
   )
+  if (desk)
+    return (
+      <>
+        {createPortal(
+          <aside className="desk-panel desk-left" aria-label="Your result">
+            <div className={`result-top tone-${result.tone}`}>
+              <div className="result-text">
+                <div className="headline">
+                  <Rich text={result.headline} />
+                </div>
+                <div className="detail">
+                  <Rich text={result.detail} />
+                </div>
+              </div>
+              {ring}
+            </div>
+            {bars}
+            <div className="desk-tabs" role="tablist" aria-label="Round details">
+              {TABS.map(([t, chip]) => (
+                <button key={t} role="tab" aria-selected={tab === t} className={`chip-btn ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
+                  {chip}
+                </button>
+              ))}
+            </div>
+            <BreakdownPanel tab={tab} b={result.breakdown} layers={layers} />
+            <h3>Replay</h3>
+            {replayPicks}
+            {viewSwitch}
+          </aside>,
+          document.body,
+        )}
+        {legend}
+        <div ref={sheetRef} className="result-sheet desk">
+          {nextButtons}
+        </div>
+      </>
+    )
   return (
     <>
-      {!tall && !ctl.replaying && <PitchLegend result={result} active={active} />}
+      {legend}
       <div
         ref={sheetRef}
         className={`result-sheet tone-${result.tone} ${snap} ${dragH !== null ? 'dragging' : ''} ${tall && active.length ? 'peek' : ''}`}
@@ -208,20 +303,9 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
                   <Rich text={result.detail} />
                 </div>
               </div>
-              <div className="brain-ring" aria-label={`Brain Score ${scores.brain}`}>
-                <svg viewBox="0 0 80 80">
-                  <circle cx="40" cy="40" r={R} className="ring-bg" />
-                  <circle cx="40" cy="40" r={R} className="ring-fg" strokeDasharray={circ} strokeDashoffset={circ * (1 - brain / 100)} />
-                </svg>
-                <div className="brain-num">{Math.round(brain)}</div>
-                <div className="brain-cap">BRAIN</div>
-              </div>
+              {ring}
             </div>
-            <div className="bars">
-              <Bar label="Decision" weight={WEIGHTS.decision} value={scores.decision} delay={100} />
-              <Bar label="Scan" weight={WEIGHTS.scan} value={scores.scan} delay={250} />
-              <Bar label="Memory" weight={WEIGHTS.memory} value={scores.memory} delay={400} />
-            </div>
+            {bars}
             <div className="chips" role="toolbar" aria-label="Round details">
               {TABS.map(([t, chip]) => (
                 <button key={t} className="chip-btn" onClick={() => open(t)}>
@@ -238,36 +322,8 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
             </div>
             {chooser && (
               <div className="replay-chooser" aria-label="Replay">
-                <div className="replay-picks">
-                  {canSimulate && (
-                    <button className="replay-btn" onClick={() => play('you')}>
-                      ▶ Your pass
-                      <small title="Your pass is simulated with the race model; the other players move as they really did.">simulated</small>
-                    </button>
-                  )}
-                  <button className="replay-btn" onClick={() => play('pro')}>
-                    ▶ Pro's pass
-                    <small>the real play</small>
-                  </button>
-                </div>
-                {onWatch3D && (
-                  <div className="seg" role="radiogroup" aria-label="View">
-                    {[false, true].map((v) => (
-                      <button
-                        key={String(v)}
-                        role="radio"
-                        aria-checked={in3D === v}
-                        className={in3D === v ? 'on' : ''}
-                        onClick={() => {
-                          if (v) void loadReplay3D() // start fetching the 3D chunk early
-                          setIn3D(v)
-                        }}
-                      >
-                        {v ? '3D · TV camera' : '2D · on the pitch'}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                {replayPicks}
+                {viewSwitch}
               </div>
             )}
             {nextButtons}
@@ -301,42 +357,5 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit }: Shee
         )}
       </div>
     </>
-  )
-}
-
-/** "ⓘ" on the pitch: what the lines mean - only what this reveal draws (renderer.ts drawReveal). */
-function PitchLegend({ result: r, active }: { result: RoundResult; active: string[] }) {
-  const [open, setOpen] = useState(false)
-  const brave = active.includes('brave')
-  const danger = active.some((k) => k[0] === 't')
-  const items: [string, string][] = [
-    ...(r.tap ? ([['mine', 'Your pass']] as [string, string][]) : []),
-    ['pro', "Pro's pass"],
-    ['best', 'Best option'],
-    ...((r.run || r.space?.team || (r.best.alone && r.best.run) || (brave && r.brave?.run) ? [['run', 'Run to the ball']] : []) as [string, string][]),
-    ...((r.run?.team === 'def' || r.space?.team === 'def' ? [['run def', 'Opponent wins it']] : []) as [string, string][]),
-    ...(((!!r.tap && r.lofted) || r.proLofted || (r.best.alone && r.best.lofted) || (brave && r.brave?.lofted)
-      ? [['loft', 'Lofted (curved)']]
-      : []) as [string, string][]),
-    ...((brave ? [['brave', 'Brave option']] : []) as [string, string][]),
-    ...((danger ? [['danger', 'Danger: could cut it out']] : []) as [string, string][]),
-  ]
-  const more = (r.brave && !brave) || (r.threats.length > 0 && !danger)
-  return (
-    <div className={`pitch-info ${open ? 'open' : ''}`}>
-      <button className="info-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="What the lines mean">
-        ⓘ
-      </button>
-      {open && (
-        <div className="info-card" role="dialog" aria-label="Legend">
-          {items.map(([k, label]) => (
-            <span key={k} className={`lg ${k}`}>
-              {label}
-            </span>
-          ))}
-          {more && <small>Brave and danger lines: tap their rows in Why?</small>}
-        </div>
-      )}
-    </div>
   )
 }

@@ -1,4 +1,5 @@
 import type { Ratings } from '../lib/profile'
+import { ROUNDS_PER_SESSION } from '../App'
 import type { Insight } from '../lib/insights'
 import type { LevelChange } from '../App'
 import { square } from '../game/scoring'
@@ -14,6 +15,8 @@ export interface SessionSummary {
   before: Ratings
   after: Ratings
   streak: number
+  /** the session counted for the streak (the whole Daily, or 5+ training rounds) */
+  dayCounted: boolean
   usedFreeze: boolean
   level: string
   levelChanges: LevelChange[]
@@ -37,7 +40,13 @@ export function Summary({ s, onHome, onTraining }: { s: SessionSummary; onHome: 
         ))}
       </div>
       <div className="streak-line">
-        🔥 {s.streak} day streak{s.usedFreeze ? ' · ❄️ freeze used to save it' : ''}
+        {s.dayCounted ? (
+          <>
+            🔥 {s.streak} day streak{s.usedFreeze ? ' · ❄️ freeze used to save it' : ''}
+          </>
+        ) : (
+          <>🔥 Play {ROUNDS_PER_SESSION}+ rounds in a session to count today for your streak</>
+        )}
       </div>
       {/* recordRound's rule: the last 3 rounds average above 80 = one level up, below 50 = one down */}
       {s.levelChanges.map((c, i) => (
@@ -48,7 +57,7 @@ export function Summary({ s, onHome, onTraining }: { s: SessionSummary; onHome: 
           </small>
         </div>
       ))}
-      <PlayerCard before={s.before} after={s.after} level={s.level} />
+      <PlayerCard before={s.before} after={s.after} />
       {s.insight && <p className={`insight ${s.insight.tone}`}>{s.insight.text}</p>}
       <ShareButton text={shareText(s.brains, s.score, s.kind === 'training')} />
       <div className="row next-actions">
