@@ -2817,3 +2817,147 @@ button {
     opacity: 0.8;
   }
 }
+
+/* ---------------------------------------------------------------- tutorial (game/tutorial.ts, Coach.tsx) */
+.home-more .how-btn:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.tutorial-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--cyan) 12%, var(--panel));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--cyan) 55%, transparent);
+  color: var(--text);
+  text-align: left;
+  animation: pop 0.35s ease both;
+}
+
+.tutorial-card b {
+  display: block;
+  font-size: 1.02rem;
+}
+
+.tutorial-card small {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.tutorial-icon {
+  font-size: 1.7rem;
+}
+
+.coach {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* the ring around what to tap: follows its target every frame */
+.coach-ring {
+  position: fixed;
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 3px var(--cyan),
+    0 0 0 9999px rgba(4, 8, 18, 0.18);
+  animation: coach-pulse 1.1s ease-in-out infinite;
+}
+
+.coach-ring.circle {
+  border-radius: 50%;
+}
+
+@keyframes coach-pulse {
+  50% {
+    box-shadow:
+      0 0 0 6px color-mix(in srgb, var(--cyan) 60%, transparent),
+      0 0 0 9999px rgba(4, 8, 18, 0.18);
+  }
+}
+
+.coach-card {
+  position: fixed;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px 16px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1.5px color-mix(in srgb, var(--cyan) 45%, transparent);
+  color: var(--text);
+  pointer-events: auto;
+  animation: pop 0.25s ease both;
+}
+
+.coach-card.top {
+  top: max(64px, env(safe-area-inset-top));
+}
+
+.coach-card.bottom {
+  bottom: max(24px, env(safe-area-inset-bottom));
+}
+
+.coach-card p {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+
+.coach-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.coach-step {
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.coach-skip {
+  background: none;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.coach-title {
+  margin-top: 6px;
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.coach-next {
+  margin-top: 12px;
+  padding-block: 11px;
+  font-size: 0.98rem;
+}
+
+/* big screens: the card sits in the free column right of the pitch, clear of the results panel */
+@media (min-width: 1180px) {
+  .coach-card {
+    left: auto;
+    right: 24px;
+    margin: 0;
+    width: 300px;
+  }
+
+  .coach-card.top,
+  .coach-card.bottom {
+    top: 80px;
+    bottom: auto;
+  }
+}

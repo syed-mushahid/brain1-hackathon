@@ -14,6 +14,8 @@ import type { MomentData } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
 import { ProScan3D } from '../three/lazy'
+import { Coach } from '../components/Coach'
+import type { CoachStep, CoachWhen } from './tutorial'
 import type { Clock } from '../three/Players'
 
 export interface RoundSettings {
@@ -70,6 +72,8 @@ interface Props {
   desk?: boolean
   /** phones: the rules toggle in the header (big screens have it at the screen's top right) */
   guide?: { open: boolean; toggle: () => void }
+  /** a tutorial round: its coach steps (game/tutorial.ts), "1/3", and leaving the tutorial */
+  tutorial?: { steps: CoachStep[]; progress: string; onSkip: () => void }
 }
 
 interface Api {
@@ -89,9 +93,13 @@ interface Api {
   panBy: (dx: number, dy: number) => void
   recenter: () => void
   stopReplay: () => void
+  /** tutorial: the current step is done */
+  coachNext: () => void
+  /** tutorial: a player's circle on screen (client px), for the coach's ring; null at the reveal */
+  pitchPoint: (t: 'you' | 'best') => { x: number; y: number; r: number } | null
 }
 
-export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
+export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide, tutorial }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -100,6 +108,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
   const [phase, setPhase] = useState<Phase>('intro')
   const [holding, setHolding] = useState(false) // the hold phase: ball at your feet, still scanning
   const [started, setStarted] = useState(false) // the player started the round
+  const [coach, setCoach] = useState<CoachStep | null>(null) // the tutorial step on screen
+  const steps = tutorial?.steps ?? []
   const [legendOpen, setLegendOpen] = useState(false)
   const [legendEl, setLegendEl] = useState<HTMLDivElement | null>(null)
   // 2D replay: -1 = off, 0 = ball coming, 1 = on the ball, 2 = pass travelling, 3 = taken over
@@ -123,6 +133,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
   onResultRef.current = onResult
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const stepsRef = useRef(steps)
+  stepsRef.current = steps
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -131,7 +143,10 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
     const r = new PitchRenderer(canvas, track)
     const pos = new Float32Array(track.n * 2)
     const ball = new Float32Array(2)
-    const bestIdx = findBestPass(track).idx // may be a pass into space: the receiver is who you should spot
+    const best = findBestPass(track)
+    const bestIdx = best.idx // may be a pass into space: the receiver is who you should spot
+    // where the best pass goes (the tutorial's "tap here" ring)
+    const bestEnd: [number, number] = best.intoSpace ? best.end : posAt(track, track.dec, best.idx)
     sample(track, 0, pos, ball)
     const startDir = dirTo(pos[track.youIdx * 2], pos[track.youIdx * 2 + 1], ball[0], ball[1])
     const g = {
@@ -149,6 +164,9 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       received: false, // pass 1 reached you (the hold phase starts, if the pro held the ball)
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       waitForStart: true, // nothing moves until the player presses "Start scanning"
+      // tutorial: the step being shown (index into its steps), when it appeared, and the game paused for it
+      coach: { idx: 0, on: false, at: 0 },
+      paused: false,
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       framed: [] as number[], // reveal: the players the headline and detail name (the camera keeps them in view)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
@@ -172,6 +190,40 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       g.t0 = now
       setPhase(p)
     }
+    // ---- tutorial: show each coach step when its moment comes, pause the game for it if it says so
+    const ORDER: Record<Phase, number> = { intro: 0, approach: 1, decide: 2, reveal: 3 }
+    const WHEN: Record<CoachWhen, number> = { intro: 0, approach: 1, received: 1, decide: 2, reveal: 3 }
+    const coachStep = () => (g.coach.on ? (stepsRef.current[g.coach.idx] ?? null) : null)
+    const coachNext = () => {
+      if (!stepsRef.current[g.coach.idx]) return
+      g.coach = { idx: g.coach.idx + 1, on: false, at: 0 }
+      g.paused = false
+      setCoach(null)
+    }
+    const coachTick = (now: number) => {
+      const st = stepsRef.current[g.coach.idx]
+      if (!st) return
+      if (!g.coach.on) {
+        // its moment has passed (or never comes: no hold phase in a one-touch moment): skip it
+        if (ORDER[g.phase] > WHEN[st.when] || (st.when === 'received' && g.received && holdFrames === 0)) return coachNext()
+        const due =
+          st.when === 'intro'
+            ? !g.waitFor3D
+            : st.when === 'approach'
+              ? g.phase === 'approach' && g.f >= 4
+              : st.when === 'received'
+                ? g.phase === 'approach' && g.received
+                : st.when === 'decide'
+                  ? g.phase === 'decide'
+                  : g.phase === 'reveal' && now - g.t0 >= REVEAL_ANIM_MS
+        if (!due) return
+        g.coach = { idx: g.coach.idx, on: true, at: now }
+        if (st.pause) g.paused = true
+        setCoach(st)
+      } else if (st.done === 'auto' && (now - g.coach.at > 4500 || ORDER[g.phase] > WHEN[st.when] || (st.when === 'approach' && g.received && holdFrames > 0)))
+        coachNext()
+    }
+
     // every judgement is made at the decision frame: where the pro really passed (track.dec)
     const before = () => (track.dec - g.f) / FPS
     const holdFrames = (track.dec - track.rec) / FPS >= HOLD_MIN_S ? track.dec - track.rec : 0
@@ -180,6 +232,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       g.look.rec = null
     }
     const finish = (tap: [number, number] | null, now: number, lofted = false) => {
+      if (coachStep()?.done === 'pass') coachNext()
       if (g.pending) clearTimeout(g.pending.timer)
       g.pending = null
       g.f = track.dec
@@ -240,6 +293,10 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         // the hold phase: the ball is at your feet, you may look around until the pro passes
         const holdingNow = g.received && holdFrames > 0
         if (g.phase !== 'approach' || g.look.active || (g.budget <= 0 && !holdingNow)) return
+        // tutorial: while a step holds the game, only the "look around" step lets you look
+        const st = coachStep()
+        if (g.paused && st?.done !== 'scan') return
+        if (st?.done === 'scan') coachNext()
         g.look.active = true
         if (dir !== null) g.look.target = dir
         g.look.rec = { dir: g.look.target, startBefore: before(), endBefore: before(), sawBestBefore: null }
@@ -308,6 +365,10 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       /** the player clicked / tapped anywhere or pressed Enter: the ball starts rolling */
       start() {
         if (g.phase !== 'intro' || !g.waitForStart) return
+        // tutorial: read the welcome card first; the "tap to start" step ends here
+        const st = coachStep()
+        if (st && st.done !== 'start') return
+        if (st) coachNext()
         g.waitForStart = false
         g.t0 = performance.now() - INTRO_MS // straight into the approach (Pro mode still waits for 3D)
         sound.whistle(1, 0.22)
@@ -335,6 +396,13 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         g.replay = { tr: played, f: f0, end, kick, take, hold: 0, stage: -1, view }
         sound.whistle(1, 0.12)
       },
+      coachNext,
+      pitchPoint(t) {
+        if (g.phase === 'reveal') return null // the reveal camera moves the pitch
+        const rect = canvas.getBoundingClientRect()
+        const [u, v] = t === 'you' ? [pos[track.youIdx * 2], pos[track.youIdx * 2 + 1]] : bestEnd
+        return { x: rect.left + r.X(u), y: rect.top + r.Y(v), r: 3.2 * r.s }
+      },
       stopReplay() {
         if (!g.replay) return
         g.replay = null
@@ -353,10 +421,11 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       raf = requestAnimationFrame(loop)
       const dt = Math.min(50, now - last)
       last = now
+      coachTick(now)
       if (g.phase === 'intro' && (g.waitFor3D || g.waitForStart)) g.t0 = now
       if (g.phase === 'intro' && now - g.t0 >= INTRO_MS) go('approach', now)
       if (g.phase === 'approach') {
-        g.f += (dt / 1000) * FPS * S.speed
+        if (!g.paused) g.f += (dt / 1000) * FPS * S.speed
         if (!g.kicked && g.f >= track.pass1) {
           g.kicked = true
           sound.kick()
@@ -378,6 +447,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           go('decide', now)
         }
       }
+      if (g.phase === 'decide' && g.paused) g.t0 += dt // the clock waits for the coach
       if (g.phase === 'decide' && now - g.t0 >= S.decideMs) finish(g.pending?.q ?? null, now) // a pending tap still counts
       if (g.phase !== 'reveal') sample(track, g.f, pos, ball)
       clock.current.f = g.f
@@ -555,7 +625,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       className={`round phase-${phase}`}
       data-moment={track.m.id}
       // the round starts on a click / tap anywhere (the pitch, the dial...) except the header's buttons
-      onPointerDown={(e) => phase === 'intro' && !(e.target as HTMLElement).closest('button, .legend-pop') && api.current?.start()}
+      onPointerDown={(e) => phase === 'intro' && !(e.target as HTMLElement).closest('button, .legend-pop, .coach-card') && api.current?.start()}
     >
       <header className="hud-top">
         <span className="chip">{label}</span>
@@ -614,12 +684,12 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           </div>
         )}
         {replayError && <div className="replay2d-bar error">Replay unavailable – {replayError}</div>}
-        {phase === 'approach' && holding && (
+        {phase === 'approach' && holding && !coach && (
           <div className="overlay hold-hint" role="status">
             Ball at your feet – keep scanning
           </div>
         )}
-        {phase === 'decide' && (
+        {phase === 'decide' && !coach && (
           <div className="overlay banner">
             PASS! Tap a teammate – or the space
             <small>tap = along the ground · double-tap = lofted</small>
@@ -660,6 +730,15 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           <span className="dial-hint right">{settings.scanBudgetMs / 1000}s scan time</span>
         </div>
       </footer>
+      {tutorial && coach && (
+        <Coach
+          step={coach}
+          progress={tutorial.progress}
+          pitchPoint={(t) => api.current?.pitchPoint(t) ?? null}
+          onNext={() => api.current?.coachNext()}
+          onSkip={tutorial.onSkip}
+        />
+      )}
       {phase === 'reveal' && (
         <RoundControls.Provider
           value={{

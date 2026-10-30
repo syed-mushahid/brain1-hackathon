@@ -34,14 +34,15 @@ import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
 import { loadPlay, withPlay } from './lib/plays'
 import { buildUserPlay, proStory, type PlayStory } from './game/userPlay'
 import type { ReplayMode } from './three/Replay3D'
+import { TUTORIAL, TUTORIAL_SETTINGS, tutorialMoments } from './game/tutorial'
 
 /** the Daily Challenge has 5 moments; free training goes on as long as you like, and counts for
  *  your streak from this many rounds */
 export const ROUNDS_PER_SESSION = 5
 
 interface Session {
-  /** test = one moment again and again (testing aid): nothing is recorded */
-  kind: 'daily' | 'training' | 'test'
+  /** test = one moment again and again (testing aid), tutorial = the three guided rounds: nothing is recorded */
+  kind: 'daily' | 'training' | 'test' | 'tutorial'
   queue: Moment[]
   index: number
   brains: number[]
@@ -180,10 +181,35 @@ export default function App() {
     setSession(null)
   }
 
+  /** The tutorial: three guided rounds (game/tutorial.ts); nothing goes into your ratings. */
+  const startTutorial = () => {
+    if (!data) return
+    sound.unlock()
+    setSummary(null)
+    setGuideOpen(false)
+    setSession({
+      kind: 'tutorial',
+      queue: tutorialMoments(data.moments),
+      index: 0,
+      brains: [],
+      settings: TUTORIAL_SETTINGS[0],
+      result: null,
+      before: ratings(profile),
+      rounds: [],
+      levelChanges: [],
+    })
+  }
+
+  /** Leave the tutorial; played to the end, Home stops suggesting it. */
+  const endTutorial = (completed: boolean) => {
+    if (completed && !profile.tutorialDone) setProfile({ ...profile, tutorialDone: true })
+    setSession(null)
+  }
+
   const onResult = (res: RoundResult) => {
     if (!session || !current) return
-    if (session.kind === 'test') {
-      // tests don't count: nothing goes into the profile
+    if (session.kind === 'test' || session.kind === 'tutorial') {
+      // tests and the tutorial don't count: nothing goes into the profile
       setSession({ ...session, result: res, brains: [...session.brains, res.scores.brain], rounds: [...session.rounds, sessionRound(res)] })
       return
     }
@@ -205,6 +231,11 @@ export default function App() {
     if (session.kind === 'test') {
       // the same moment again (a new round: fresh scan, fresh decision)
       setSession({ ...session, queue: [...session.queue, session.queue[0]], index: session.index + 1, result: null })
+      return
+    }
+    if (session.kind === 'tutorial') {
+      if (session.index + 1 >= session.queue.length) return endTutorial(true)
+      setSession({ ...session, index: session.index + 1, result: null, settings: TUTORIAL_SETTINGS[session.index + 1] })
       return
     }
     // the Daily Challenge ends after its 5 moments; training goes on until you end it
@@ -254,6 +285,7 @@ export default function App() {
   const goHome = () => {
     if (!session) return
     if (session.kind === 'test') return endTest()
+    if (session.kind === 'tutorial') return endTutorial(false)
     if (session.kind === 'daily') {
       // an unfinished Daily Challenge doesn't count as today's challenge (its rounds stay in your ratings)
       if (session.brains.length < ROUNDS_PER_SESSION && !confirm('Leave the Daily Challenge? It only counts when all 5 moments are played.')) return
@@ -297,10 +329,13 @@ export default function App() {
     const label =
       session.kind === 'test'
         ? `Test · try ${n}`
-        : session.kind === 'daily'
+        : session.kind === 'tutorial'
+          ? `Tutorial ${n}/${session.queue.length}`
+          : session.kind === 'daily'
           ? `Daily ${n}/${ROUNDS_PER_SESSION}`
           : `Training ${n}`
     const last = session.kind === 'daily' && session.brains.length >= ROUNDS_PER_SESSION
+    const tutorial = session.kind === 'tutorial'
     return (
       <>
         <Round
@@ -312,19 +347,36 @@ export default function App() {
           proMode={session.kind !== 'daily' && proMode}
           desk={desk}
           guide={desk ? undefined : { open: guideOpen, toggle: () => setGuideOpen((o) => !o) }}
+          tutorial={
+            tutorial
+              ? { steps: TUTORIAL[session.index] ?? [], progress: `${n}/${session.queue.length}`, onSkip: () => endTutorial(false) }
+              : undefined
+          }
         >
           {session.result && (
             <ResultSheet
               result={session.result}
               onNext={next}
-              nextLabel={session.kind === 'test' ? 'Play again' : last ? 'See summary' : 'Next moment'}
+              nextLabel={
+                session.kind === 'test'
+                  ? 'Play again'
+                  : tutorial
+                    ? n >= session.queue.length
+                      ? 'Finish tutorial'
+                      : 'Next round'
+                    : last
+                      ? 'See summary'
+                      : 'Next moment'
+              }
               onWatch3D={watch3D}
               exit={
                 session.kind === 'test'
                   ? { label: `Moment ${current!.id} · back home`, onExit: endTest }
                   : session.kind === 'training'
                     ? { label: 'End training · see summary', onExit: () => finish(true) }
-                    : undefined
+                    : tutorial
+                      ? { label: 'Skip the tutorial', onExit: () => endTutorial(false) }
+                      : undefined
               }
               desk={desk}
             />
@@ -383,8 +435,7 @@ export default function App() {
       onToggleMute={toggleMute}
       onTogglePro={togglePro}
       onStats={() => setShowStats(true)}
-      // the hook for the tutorial round: until it exists, FEATURES.tutorial keeps the button hidden
-      onHowToPlay={FEATURES.tutorial ? () => start('training') : undefined}
+      onTutorial={FEATURES.tutorial ? startTutorial : undefined}
     />
   )
 }

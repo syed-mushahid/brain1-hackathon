@@ -27,11 +27,11 @@ interface Props {
   onTogglePro: () => void
   /** the Statistics screen */
   onStats: () => void
-  /** the tutorial round, offered in "How to play" once it exists (lib/features.ts) */
-  onHowToPlay?: () => void
+  /** the tutorial: three guided rounds (lib/features.ts switches it on) */
+  onTutorial?: () => void
 }
 
-export function Home({ profile, moments, preview, onDaily, onTraining, onTest, onToggleMute, onTogglePro, onStats, onHowToPlay }: Props) {
+export function Home({ profile, moments, preview, onDaily, onTraining, onTest, onToggleMute, onTogglePro, onStats, onTutorial }: Props) {
   const wide = useMedia('(min-width: 1024px)')
   useHomeMusic(profile.muted)
   // a clock for the "next challenge in" countdown; at midnight the new challenge appears by itself
@@ -131,6 +131,19 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
         </section>
       )}
 
+      {/* new players: the tutorial first (until it was played to the end, or they have rounds already) */}
+      {onTutorial && !profile.tutorialDone && profile.history.length === 0 && (
+        <button className="tutorial-card" onClick={onTutorial}>
+          <span className="tutorial-icon" aria-hidden>
+            🎓
+          </span>
+          <span>
+            <b>New here? Play the tutorial</b>
+            <small>3 guided rounds · about 2 min</small>
+          </span>
+        </button>
+      )}
+
       {/* the main button, unless today's Daily Challenge is still to play */}
       <button className={`cta ${FEATURES.daily && !daily ? 'ghost' : ''}`} onClick={onTraining}>
         Start Training
@@ -151,13 +164,18 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
         <button className="cta ghost how-btn" onClick={() => howRef.current?.showModal()}>
           How to play
         </button>
+        {onTutorial && (
+          <button className="cta ghost how-btn" onClick={onTutorial}>
+            🎓 Tutorial
+          </button>
+        )}
       </div>
       <dialog ref={howRef} className="how-dialog" aria-label="How to play" onClick={(e) => e.target === e.currentTarget && howRef.current?.close()}>
         <h2>How to play</h2>
         {steps}
         <div className="how-actions">
-          {onHowToPlay && (
-            <button className="cta" onClick={onHowToPlay}>
+          {onTutorial && (
+            <button className="cta" onClick={() => (howRef.current?.close(), onTutorial())}>
               Play the tutorial
             </button>
           )}
