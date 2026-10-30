@@ -5,4 +5,6 @@ export const FEATURES = {
   /** Pro mode: the scan phase in 3D first-person (training). Off for now: no toggle on Home, and a
    *  saved "on" is ignored */
   proMode: false,
+  /** the Daily Challenge card on Home (the challenge itself still works when this is switched back on) */
+  daily: false,
 }

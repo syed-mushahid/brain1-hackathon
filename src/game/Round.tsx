@@ -4,13 +4,14 @@ import { MODEL } from './model.config'
 import { loadPlay, withPlay } from '../lib/plays'
 import { buildUserPlay, proStory, storyCaption, type PlayStory } from './userPlay'
 import { PLAYER, Rich } from '../components/Rich'
+import { LineLegend } from '../components/Legend'
 import { PitchRenderer, type RevealDraw, type Scene, type View } from './renderer'
 import { evaluate, type RoundResult } from './evaluate'
 import { coneVis, dirTo, HEAD_TURN, turnTowards, type ScanRecord } from './vision'
 import { ScanDial } from './ScanDial'
 import { findBestPass } from './best'
 import { minuteLabel } from './explain'
-import type { Difficulty, MomentData } from '../types'
+import type { MomentData } from '../types'
 import { sound } from '../lib/sound'
 import { vibrate } from '../lib/util'
 import { ProScan3D } from '../three/lazy'
@@ -34,6 +35,8 @@ const REVEAL_ANIM_MS = 900
 const DARKEN_MS = 300 // vision shrinking to "you" at reception
 const LIFT_MS = 350 // darkness lifting at the reveal
 const FRAME_MARGIN_M = 6 // space kept around the action when the reveal camera frames it
+/** a touch screen: "Tap anywhere to start" rather than "Click anywhere or press Enter" */
+const TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
 const REPLAY_LEAD_S = 1 // the 2D replay starts this long before the reception
 const REPLAY_HOLD_MS = 1200 // ...and holds the last frame this long before returning to the reveal
 /** the reveal camera may zoom out this far: with the tall results sheet only a strip of pitch is left */
@@ -46,6 +49,8 @@ export const RoundControls = createContext<{
   replaying: boolean
   /** optional pitch layers (a tapped Brave / Danger row in the Why? tab) */
   setLayers: (show: RevealDraw['show']) => void
+  /** the open "what the lines mean" popover (the ⓘ in the header): the results sheet fills it */
+  legendEl: HTMLElement | null
   /** the layer a Why? row stands for: 'brave', 't<opponent index>' (his danger line) or null */
   layerOf: (point: string) => string | null
 }>({
@@ -54,12 +59,11 @@ export const RoundControls = createContext<{
   replaying: false,
   setLayers: () => {},
   layerOf: () => null,
+  legendEl: null,
 })
 
 interface Props {
   track: Track
-  /** the game's difficulty for this moment (data/load.ts) */
-  difficulty: Difficulty
   settings: RoundSettings
   label: string
   onResult: (r: RoundResult, scans: ScanRecord[]) => void
@@ -69,7 +73,7 @@ interface Props {
   proMode?: boolean
   /** big screens: the intro's instructions are in the panel left of the pitch (only the start button here) */
   desk?: boolean
-  /** the guide (rules) toggle in the header */
+  /** phones: the rules toggle in the header (big screens have it at the screen's top right) */
   guide?: { open: boolean; toggle: () => void }
 }
 
@@ -93,14 +97,16 @@ interface Api {
   setLayers: (show: RevealDraw['show']) => void
 }
 
-export function Round({ track, difficulty, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
+export function Round({ track, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dialRef = useRef<HTMLDivElement>(null)
   const dialTimeRef = useRef<HTMLElement>(null)
   const [phase, setPhase] = useState<Phase>('intro')
-  const [started, setStarted] = useState(false) // "Start scanning" pressed
+  const [started, setStarted] = useState(false) // the player started the round
+  const [legendOpen, setLegendOpen] = useState(false)
+  const [legendEl, setLegendEl] = useState<HTMLDivElement | null>(null)
   // 2D replay: -1 = off, 0 = ball coming, 1 = on the ball, 2 = pass travelling, 3 = taken over
   const [replayStage, setReplayStage] = useState(-1)
   const [replayError, setReplayError] = useState('')
@@ -298,6 +304,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           g.t0 = performance.now()
         }
       },
+      /** the player clicked / tapped anywhere or pressed Enter: the ball starts rolling */
       start() {
         if (g.phase !== 'intro' || !g.waitForStart) return
         g.waitForStart = false
@@ -471,7 +478,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       return x === 0 && y === 0 ? null : Math.atan2(x, y)
     }
     const onKey = (e: KeyboardEvent) => {
-      // Enter / Space on the start screen = "Start scanning"
+      // Enter / Space on the start screen starts the round
       if (e.type === 'keydown' && (e.key === 'Enter' || e.key === ' ') && g.phase === 'intro' && g.waitForStart) {
         e.preventDefault()
         api.current?.start()
@@ -528,24 +535,41 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
     api.current?.lookEnd()
   }
   const m = track.m
-  const startButton = (
-    <button className="cta start-btn" onClick={() => api.current?.start()} autoFocus>
-      ▶ Start scanning
-    </button>
+  const startHint = !started && (
+    <div className="start-hint">{TOUCH ? 'Tap anywhere to start' : 'Click anywhere or press Enter to start'}</div>
   )
 
   return (
-    <div ref={rootRef} className={`round phase-${phase}`} data-moment={track.m.id}>
+    <div
+      ref={rootRef}
+      className={`round phase-${phase}`}
+      data-moment={track.m.id}
+      // the round starts on a click / tap anywhere (the pitch, the dial...) except the header's buttons
+      onPointerDown={(e) => phase === 'intro' && !(e.target as HTMLElement).closest('button, .legend-pop') && api.current?.start()}
+    >
       <header className="hud-top">
         <span className="chip">{label}</span>
         <span className="clock">{m.clock}′</span>
-        <span className={`chip diff diff-${difficulty}`}>{difficulty}</span>
+        <button
+          className={`icon-btn legend-btn ${legendOpen ? 'on' : ''}`}
+          onClick={() => setLegendOpen((o) => !o)}
+          aria-expanded={legendOpen}
+          aria-label="What the lines mean"
+        >
+          ⓘ
+        </button>
         {guide && (
-          <button className={`icon-btn guide-btn ${guide.open ? 'on' : ''}`} onClick={guide.toggle} aria-pressed={guide.open} aria-label="Rules and guide">
-            ?
+          <button className={`icon-btn guide-btn ${guide.open ? 'on' : ''}`} onClick={guide.toggle} aria-pressed={guide.open}>
+            Rules
           </button>
         )}
       </header>
+      {legendOpen && (
+        <div className="legend-pop" ref={setLegendEl} role="dialog" aria-label="What the lines mean">
+          {/* after the pass the results sheet puts this round's lines here */}
+          {phase !== 'reveal' && <LineLegend />}
+        </div>
+      )}
       <div
         className="pitch-wrap"
         ref={wrapRef}
@@ -565,7 +589,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
                 <Who m={m} />
               </>
             )}
-            {!started && startButton}
+            {startHint}
           </div>
         )}
         {replayStage >= 0 && (
@@ -601,7 +625,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
             <div className="big">Pro mode</div>
             <div className="sub">Look around before the ball arrives</div>
             <Who m={m} />
-            {!started && startButton}
+            {startHint}
           </div>
         )}
       </div>
@@ -627,6 +651,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
             replaying: replayStage >= 0,
             stopReplay,
             setLayers: (show) => api.current?.setLayers(show),
+            legendEl,
             layerOf: (point) => {
               const res = lastResult.current
               if (!res) return null

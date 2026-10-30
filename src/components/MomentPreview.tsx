@@ -57,7 +57,8 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
       const w = wrap.clientWidth
       const h = wrap.clientHeight
       if (!w || !h) return
-      // the pitch covers the box (and a bit more), centred on "you" a little towards the ball
+      // the pitch covers the box (and a bit more), centred on "you" a little towards the ball - also
+      // near a touchline (the edges fade out, so grass ending there doesn't show)
       const aspect = (PITCH_W + 2 * MARGIN) / (PITCH_L + 2 * MARGIN)
       const cw = Math.max(w, h * aspect) * ZOOM[fit]
       r.resize(cw, cw / aspect)
@@ -65,9 +66,8 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
       const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
       const ballU = tr.ball[0] // first frame
       const ballV = tr.ball[1]
-      const clamp = (x: number, lo: number) => Math.max(lo, Math.min(0, x))
-      const tx = clamp(w / 2 - r.X(0.7 * youU + 0.3 * ballU), w - r.w)
-      const ty = clamp(h / 2 - r.Y(0.7 * youV + 0.3 * ballV), h - r.h)
+      const tx = w / 2 - r.X(0.7 * youU + 0.3 * ballU)
+      const ty = h / 2 - r.Y(0.7 * youV + 0.3 * ballV)
       canvas.style.transform = `translate(${tx}px, ${ty}px)`
       draw(f)
     }

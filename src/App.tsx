@@ -298,13 +298,12 @@ export default function App() {
         <Round
           key={`${session.kind}-${session.index}`}
           track={track}
-          difficulty={current!.difficulty}
           settings={session.settings}
           label={label}
           onResult={onResult}
           proMode={session.kind !== 'daily' && proMode}
           desk={desk}
-          guide={{ open: guideOpen, toggle: () => setGuideOpen((o) => !o) }}
+          guide={desk ? undefined : { open: guideOpen, toggle: () => setGuideOpen((o) => !o) }}
         >
           {session.result && (
             <ResultSheet
@@ -338,8 +337,14 @@ export default function App() {
                 <b>Pass</b>: click a teammate or into space within 2 s · double-click for a lofted pass
               </li>
             </ol>
-            <p className="intro-note">Press “Start scanning” (or Enter) when you're ready. Your score, the feedback and the replays appear here after your pass.</p>
+            <p className="intro-note">Click anywhere on the pitch or press Enter to start. Your score, the feedback and the replays appear here after your pass.</p>
           </aside>
+        )}
+        {/* big screens: the rules open from the screen's top right */}
+        {desk && !guideOpen && (
+          <button className="rules-fab" onClick={() => setGuideOpen(true)}>
+            Rules
+          </button>
         )}
         {guideOpen && (
           <GuidePanel

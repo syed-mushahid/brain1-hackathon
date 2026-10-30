@@ -104,32 +104,35 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
 
       {card}
 
-      <section className="daily-card">
-        <div className="daily-head">
-          <div>
-            <div className="eyebrow">Daily Challenge · {shortDate(new Date(now))}</div>
-            <div className="daily-title">5 real moments, same for everyone</div>
-            <div className="daily-meta">about 3 min</div>
-          </div>
-        </div>
-        {daily ? (
-          <div className="daily-done">
-            <div className="done-line">
-              Done ✓ · Brain Score {daily.score}
-              <small>
-                next challenge in {untilMidnight(now)}
-              </small>
+      {FEATURES.daily && (
+        <section className="daily-card">
+          <div className="daily-head">
+            <div>
+              <div className="eyebrow">Daily Challenge · {shortDate(new Date(now))}</div>
+              <div className="daily-title">5 real moments, same for everyone</div>
+              <div className="daily-meta">about 3 min</div>
             </div>
-            <ShareButton text={shareText(daily.brains, daily.score)} compact />
           </div>
-        ) : (
-          <button className="cta" onClick={onDaily}>
-            Play Daily Challenge
-          </button>
-        )}
-      </section>
+          {daily ? (
+            <div className="daily-done">
+              <div className="done-line">
+                Done ✓ · Brain Score {daily.score}
+                <small>
+                  next challenge in {untilMidnight(now)}
+                </small>
+              </div>
+              <ShareButton text={shareText(daily.brains, daily.score)} compact />
+            </div>
+          ) : (
+            <button className="cta" onClick={onDaily}>
+              Play Daily Challenge
+            </button>
+          )}
+        </section>
+      )}
 
-      <button className={`cta ${daily ? '' : 'ghost'}`} onClick={onTraining}>
+      {/* the main button, unless today's Daily Challenge is still to play */}
+      <button className={`cta ${FEATURES.daily && !daily ? 'ghost' : ''}`} onClick={onTraining}>
         Start Training
       </button>
       {FEATURES.proMode && (

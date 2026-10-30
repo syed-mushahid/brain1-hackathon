@@ -4,6 +4,7 @@ import { RoundControls } from '../game/Round'
 import type { RoundResult } from '../game/evaluate'
 import { BreakdownPanel, type Layers, type Tab } from './Breakdown'
 import { Rich } from './Rich'
+import { LineLegend } from './Legend'
 import { scoreTone, WEIGHTS } from '../game/scoring'
 import { loadReplay3D } from '../three/lazy'
 
@@ -219,6 +220,8 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
       <Bar label="Memory" weight={WEIGHTS.memory} value={scores.memory} delay={400} />
     </div>
   )
+  // what the lines mean, in the popover under the round's ⓘ (Round.tsx) while it is open
+  const legend = ctl.legendEl && createPortal(<LineLegend result={result} active={active} />, ctl.legendEl)
   const nextButtons = (
     <>
       <button className="cta next-btn" onClick={onNext}>
@@ -262,8 +265,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
           </aside>,
           document.body,
         )}
-        {/* what the lines mean: an ⓘ at the top left of the pitch, as on phones (they have it top right) */}
-        {!ctl.replaying && <PitchLegend result={result} active={active} side="left" />}
+        {legend}
         <div ref={sheetRef} className="result-sheet desk">
           {nextButtons}
         </div>
@@ -271,7 +273,7 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
     )
   return (
     <>
-      {!tall && !ctl.replaying && <PitchLegend result={result} active={active} />}
+      {legend}
       <div
         ref={sheetRef}
         className={`result-sheet tone-${result.tone} ${snap} ${dragH !== null ? 'dragging' : ''} ${tall && active.length ? 'peek' : ''}`}
@@ -355,51 +357,5 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
         )}
       </div>
     </>
-  )
-}
-
-/** What the lines on the pitch mean: only what this reveal draws (renderer.ts drawReveal). */
-function Legend({ result: r, active }: { result: RoundResult; active: string[] }) {
-  const brave = active.includes('brave')
-  const danger = active.some((k) => k[0] === 't')
-  const items: [string, string][] = [
-    ...(r.tap ? ([['mine', 'Your pass']] as [string, string][]) : []),
-    ['pro', "Pro's pass"],
-    ['best', 'Best option'],
-    ...((r.run || r.space?.team || (r.best.alone && r.best.run) || (brave && r.brave?.run) ? [['run', 'Run to the ball']] : []) as [string, string][]),
-    ...((r.run?.team === 'def' || r.space?.team === 'def' ? [['run def', 'Opponent wins it']] : []) as [string, string][]),
-    ...(((!!r.tap && r.lofted) || r.proLofted || (r.best.alone && r.best.lofted) || (brave && r.brave?.lofted)
-      ? [['loft', 'Lofted (curved)']]
-      : []) as [string, string][]),
-    ...((brave ? [['brave', 'Brave option']] : []) as [string, string][]),
-    ...((danger ? [['danger', 'Danger: could cut it out']] : []) as [string, string][]),
-  ]
-  const more = (r.brave && !brave) || (r.threats.length > 0 && !danger)
-  return (
-    <div className="legend-list">
-      {items.map(([k, label]) => (
-        <span key={k} className={`lg ${k}`}>
-          {label}
-        </span>
-      ))}
-      {more && <small>Brave and danger lines: tap their rows in Why?</small>}
-    </div>
-  )
-}
-
-/** "ⓘ" on the pitch: opens the legend. */
-function PitchLegend({ result, active, side = 'right' }: { result: RoundResult; active: string[]; side?: 'left' | 'right' }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className={`pitch-info ${side} ${open ? 'open' : ''}`}>
-      <button className="info-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="What the lines mean">
-        ⓘ
-      </button>
-      {open && (
-        <div className="info-card" role="dialog" aria-label="Legend">
-          <Legend result={result} active={active} />
-        </div>
-      )}
-    </div>
   )
 }
