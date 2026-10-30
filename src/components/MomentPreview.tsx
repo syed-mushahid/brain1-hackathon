@@ -1,20 +1,16 @@
 import { useEffect, useRef } from 'react'
 import type { Moment } from '../types'
-import { buildTrack, PITCH_L, PITCH_W, sample } from '../game/track'
+import { buildTrack, sample } from '../game/track'
 import { PitchRenderer } from '../game/renderer'
 import { dirTo } from '../game/vision'
 
-// A real moment on a loop (home screen), as you see it in the game: the ball coming to "you" in the
-// fog, a look over the shoulder sweeping the pitch. Zoomed in on "you" and faded into the page at
-// every edge. The game's own renderer, one data frame per draw (~10 fps); paused in a hidden tab and
-// with reduced motion (one still frame, mid-scan).
+// A real moment on a loop (home screen): the ball coming to "you" in the fog, a look over the
+// shoulder sweeping the pitch. The game's own renderer, one data frame per draw (~10 fps); paused
+// off screen, in a hidden tab and with reduced motion (one still frame).
 
 const STEP_MS = 100 // one 10 fps data frame per draw
 const HOLD_FRAMES = 12 // the picture rests on the reception before the loop restarts
 const SWEEP = 2.3 // rad: how far the look swings away from the ball
-const MARGIN = 2.5 // the renderer's grass around the pitch (m)
-/** how much bigger than the box the pitch is drawn (the box crops it, centred on "you") */
-const ZOOM = { band: 1.3, whole: 1.15 }
 
 export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | 'whole' }) {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -29,6 +25,7 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     const ball = new Float32Array(2)
     const reduce = matchMedia('(prefers-reduced-motion: reduce)')
     let f = 0
+    let onScreen = true
     let timer = 0
 
     const draw = (frame: number) => {
@@ -56,22 +53,21 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
       const w = wrap.clientWidth
       const h = wrap.clientHeight
       if (!w || !h) return
-      // the pitch covers the box (and a bit more), centred on "you" a little towards the ball - also
-      // near a touchline (the edges fade out, so grass ending there doesn't show)
-      const aspect = (PITCH_W + 2 * MARGIN) / (PITCH_L + 2 * MARGIN)
-      const cw = Math.max(w, h * aspect) * ZOOM[fit]
-      r.resize(cw, cw / aspect)
-      const youU = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2]
-      const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
-      const ballU = tr.ball[0] // first frame
-      const ballV = tr.ball[1]
-      const tx = w / 2 - r.X(0.7 * youU + 0.3 * ballU)
-      const ty = h / 2 - r.Y(0.7 * youV + 0.3 * ballV)
-      canvas.style.transform = `translate(${tx}px, ${ty}px)`
+      if (fit === 'whole') {
+        r.resize(w, h)
+        canvas.style.transform = ''
+      } else {
+        // a band: the pitch fills the width, centred on "you" (a little towards where the ball comes from)
+        r.resize(w, Infinity)
+        const ballV = tr.ball[1] // first frame
+        const youV = tr.pos[(tr.rec * tr.n + tr.youIdx) * 2 + 1]
+        const mid = r.Y(0.8 * youV + 0.2 * ballV)
+        canvas.style.transform = `translateY(${-Math.max(0, Math.min(r.h - h, mid - h / 2))}px)`
+      }
       draw(f)
     }
     const tick = () => {
-      if (document.hidden) return
+      if (!onScreen || document.hidden) return
       f = f >= tr.rec + HOLD_FRAMES ? 0 : f + 1
       draw(f)
     }
@@ -84,17 +80,15 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     }
     layout()
     run()
-    // measure again once the page has settled (the box can still be 0 x 0 on the very first pass)
-    const raf = requestAnimationFrame(layout)
     const ro = new ResizeObserver(layout)
     ro.observe(wrap)
-    window.addEventListener('resize', layout)
+    const io = new IntersectionObserver(([e]) => (onScreen = e.isIntersecting))
+    io.observe(wrap)
     reduce.addEventListener('change', run)
     return () => {
       clearInterval(timer)
-      cancelAnimationFrame(raf)
       ro.disconnect()
-      window.removeEventListener('resize', layout)
+      io.disconnect()
       reduce.removeEventListener('change', run)
     }
   }, [moment, fit])

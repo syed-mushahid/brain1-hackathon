@@ -1744,44 +1744,38 @@ button {
   color: #ff8a6a;
 }
 
-/* the looping moment: a band above the card (phones), the left column (desktop). Zoomed in on
-   "you" and faded to the page colour at every edge, so it melts into the background. The fade is a
-   plain gradient laid over the canvas (not a CSS mask: a mask over a canvas that redraws can fail to
-   repaint on some GPUs) */
+/* the looping moment: a band above the card (phones), the whole pitch on the left (desktop) */
 .preview {
   position: relative;
-  margin: 0 -16px; /* phones: edge to edge */
+  margin: 0;
   overflow: hidden;
-  isolation: isolate;
-  background: #0a1020;
-}
-
-.preview::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, #0a1020, rgba(10, 16, 32, 0) 14%, rgba(10, 16, 32, 0) 86%, #0a1020),
-    linear-gradient(180deg, #0a1020, rgba(10, 16, 32, 0) 14%, rgba(10, 16, 32, 0) 86%, #0a1020);
+  border-radius: 16px;
+  background: var(--bg-2);
 }
 
 .preview canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
   display: block;
+  margin: 0 auto;
 }
 
 .preview-band {
-  height: 250px;
+  height: 170px;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
 }
 
 .preview-whole {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   height: 100%;
-  margin: 0;
+  background: none;
+}
+
+.preview-whole canvas {
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 
 /* desktop: two columns */
@@ -1799,7 +1793,7 @@ button {
   position: sticky;
   top: 0;
   height: 100dvh;
-  padding: 0;
+  padding: 24px 0;
 }
 
 .home-wide .screen {
