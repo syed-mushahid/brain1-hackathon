@@ -81,6 +81,13 @@ export default function App() {
   const [showStats, setShowStats] = useState(false)
   // the rules during a round: hidden until the "?" in the round's header asks for them
   const [guideOpen, setGuideOpen] = useState(false)
+  // big screens, rules hidden: the results panel takes the free width and the pitch moves right
+  // (a class on <body>: the results panel is portalled there)
+  const wideLeft = desk && !!session && !guideOpen
+  useEffect(() => {
+    document.body.classList.toggle('desk-wide-left', wideLeft)
+    return () => document.body.classList.remove('desk-wide-left')
+  }, [wideLeft])
   const [replay, setReplay] = useState<{ moment: MomentData; mode: ReplayMode; bestIdx: number } | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
 

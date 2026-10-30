@@ -2693,3 +2693,21 @@ button {
 .stats-more b {
   color: #f2f5ff;
 }
+
+/* big screens, rules hidden: the results panel takes the free width (up to 600 px) and the pitch
+   column moves right next to it; opening Rules brings back the centred three columns */
+@media (min-width: 1180px) {
+  body.desk-wide-left {
+    --side-wide: clamp(320px, calc(100vw - 520px - 172px), 600px); /* 172 = margins + room for "Rules" */
+  }
+
+  body.desk-wide-left .desk-left {
+    right: auto;
+    left: 16px;
+    width: var(--side-wide);
+  }
+
+  body.desk-wide-left .round {
+    margin-left: calc(16px + var(--side-wide) + 20px);
+  }
+}
