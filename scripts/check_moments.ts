@@ -1,10 +1,11 @@
-// npm run check [-- <dir | files...>] [--json out.json] [--taps 20]
+// npm run check [-- <dir | files...>] [--json out.json] [--taps 20] [--max-hold-s 2]
 //
 // Loads moment files through the real game code (data contract validation, game/facts.ts,
 // best.ts, evaluate.ts, explain.ts) and simulates taps: the best option, the pro's pass and
 // `--taps` random taps (seeded by the moment id, so runs repeat). Asserts that, for every moment:
-//   - the data is sane: the ball is within 2 m of "you" at the reception, everyone is on the pitch,
-//     the attack goes the right way, the replay file matches;
+//   - the data is sane: the ball is within 2 m of "you" at the reception and at the decision, everyone
+//     is on the pitch, the attack goes the right way, the replay file matches (its kick = the decision
+//     frame); the pro passed within --max-hold-s (the pipeline's max_hold_s) of receiving;
 //   - the best option is not a backward pass into space, and has at least best.minP (60 %) to arrive
 //     (a riskier pass is only ever the "Brave option", below it);
 //   - "dead heat" / "split second" never appear, and "close race" only between 40 and 60 %;
@@ -28,7 +29,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { validateMoment, validatePlay } from '../src/data/validate'
 import type { MomentData, Play } from '../src/types'
-import { buildTrack, PITCH_L, PITCH_W, posAt, toPortrait, idxOf, type Track } from '../src/game/track'
+import { buildTrack, FPS, PITCH_L, PITCH_W, posAt, toPortrait, idxOf, type Track } from '../src/game/track'
 import { findBestPass, findBravePass, isProAsGoodAsBest, rankedPasses, rankValue, scoredOptions } from '../src/game/best'
 import { difficultyParts } from '../src/game/difficulty'
 import { evaluate, type RoundResult } from '../src/game/evaluate'
@@ -48,6 +49,7 @@ const opt = (name: string) => {
 }
 const jsonOut = opt('--json')
 const nRandom = Number(opt('--taps') ?? 20)
+const maxHoldS = Number(opt('--max-hold-s') ?? 2)
 const quiet = argv.includes('--quiet')
 const targets = argv.filter((a) => a !== '--quiet')
 const APP_DIR = path.resolve('public/moments')
@@ -216,12 +218,21 @@ function checkMoment(file: string): MomentReport {
   const you = rf.players.find((p) => p.pid === m.you_pid)!
   const d = Math.hypot(you.x - rf.ball.x, you.y - rf.ball.y)
   if (d > 2) P.push(`ball ${d.toFixed(1)} m from you at the reception (max 2 m)`)
+  const df = m.frames[m.decision_frame_index]
+  const youD = df.players.find((p) => p.pid === m.you_pid)!
+  const dd = Math.hypot(youD.x - df.ball.x, youD.y - df.ball.y)
+  if (dd > 2) P.push(`ball ${dd.toFixed(1)} m from you at the decision frame (max 2 m)`)
+  // the hold (reception -> the pro's pass) within max_hold_s
+  const holdS = (m.decision_frame_index - m.reception_frame_index) / FPS
+  if (holdS > maxHoldS + 0.05 || (m.hold_s ?? 0) > maxHoldS) P.push(`the pro held the ball ${Math.max(holdS, m.hold_s ?? 0).toFixed(2)} s (max_hold_s ${maxHoldS})`)
   let play: Play | null = null
   const playFile = file.replace(/\.json$/, '.play.json')
   if (fs.existsSync(playFile)) {
     const pv = validatePlay(JSON.parse(fs.readFileSync(playFile, 'utf8')), m.id)
     if (pv.ok) play = pv.value
     else P.push(...pv.problems.map((x) => `play file: ${x}`))
+    if (play && Math.abs(play.kick_index - (m.decision_frame_index - m.reception_frame_index)) > 1e-6)
+      P.push(`play file: kick_index ${play.kick_index} is not the decision frame (${m.decision_frame_index - m.reception_frame_index} after the reception)`)
   }
   const off = new Set<string>()
   for (const f of [...m.frames, ...(play?.frames ?? [])])

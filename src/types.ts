@@ -1,4 +1,4 @@
-// The data contract (src/data/moment.schema.json, schema_version 1): raw facts only, one file per
+// The data contract (src/data/moment.schema.json, schema_version 2): raw facts only, one file per
 // moment written by extract_moments.py. Everything the game judges (options' values, the best
 // pass, difficulty, risk) is computed at load time from these facts and src/game/model.config.ts.
 // Coordinates: metres, origin bottom-left, x 0-105 (attack left -> right), y 0-68.
@@ -24,7 +24,7 @@ export interface Frame {
 
 /** One moment file, public/moments/<id>.json. */
 export interface MomentData {
-  schema_version: 1
+  schema_version: 2
   /** stable id <match_id>-<reception_frame> (DFL tracking frame number); the file name and the progress key */
   id: string
   match_id: string
@@ -34,7 +34,10 @@ export interface MomentData {
   you_pid: string
   passer_pid: string
   pass1_frame_index: number
+  /** you receive the ball (display only: the hold phase starts here) */
   reception_frame_index: number
+  /** the pro played pass 2: the decision moment, where every judgement is made (>= reception) */
+  decision_frame_index: number
   /** optional, informational: how long the pro held the ball before passing (s) */
   hold_s?: number
   actual: {
@@ -45,7 +48,7 @@ export interface MomentData {
     length: number
     success: boolean
     outcome: 'received' | 'intercepted' | 'out' | 'loose'
-    /** who took the ball over: his run from the reception frame to the takeover (t s later) */
+    /** who took the ball over: his run from the decision frame to the takeover (t s after pass 2) */
     taker: { pid: string; t: number; run: [number, number][] } | null
     /** highest the ball got during the pass (m, measured). Optional: without it the pass counts as
      *  lofted only beyond race.loftFrom (model.config.ts) */
@@ -64,7 +67,7 @@ export interface Moment extends MomentData {
 
 /** Replay data, public/moments/<id>.play.json (loaded only when a replay is watched). */
 export interface Play {
-  schema_version: 1
+  schema_version: 2
   id: string
   /** frames from the reception (index 0 = the moment's reception frame), 10 fps, ball z = height */
   frames: Frame[]
@@ -73,7 +76,7 @@ export interface Play {
   take_index: number
 }
 
-/** One passing option, computed by the game from the reception frame (game/facts.ts) and valued by
+/** One passing option, computed by the game from the decision frame (game/facts.ts) and valued by
  *  expected value (game/value.ts). */
 export interface OptionFacts {
   pid: string

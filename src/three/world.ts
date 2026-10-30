@@ -34,7 +34,9 @@ export interface World {
   bx: Float32Array
   by: Float32Array
   bz: Float32Array
+  /** reception (pass 1 arrives) and the decision frame (the pro played pass 2) */
   rec: number
+  dec: number
   pass1: number
 }
 
@@ -109,6 +111,7 @@ export function buildWorld(m: MomentData): World {
     by,
     bz,
     rec,
+    dec: m.decision_frame_index,
     pass1: p1,
   }
 }

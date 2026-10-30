@@ -25,7 +25,10 @@ export interface Track {
   pos: Float32Array
   /** [frame][u, v] */
   ball: Float32Array
+  /** you receive the ball (display only: the hold phase runs from here to the decision) */
   rec: number
+  /** the pro played pass 2: the decision frame, where every judgement is made */
+  dec: number
   pass1: number
 }
 
@@ -60,6 +63,7 @@ export function buildTrack(m: MomentData): Track {
     pos,
     ball,
     rec: m.reception_frame_index,
+    dec: m.decision_frame_index,
     pass1: m.pass1_frame_index ?? 0,
   }
 }

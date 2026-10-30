@@ -9,7 +9,7 @@ import type { MomentData, Play } from '../types'
 
 type Schema = Record<string, unknown>
 const SCHEMA = schemaJson as Schema
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 const typeOf = (v: unknown): string =>
   v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v === 'number' && Number.isInteger(v) ? 'integer' : typeof v
@@ -92,7 +92,9 @@ function semanticProblems(m: MomentData): string[] {
   const out: string[] = []
   const n = m.frames.length
   if (m.reception_frame_index >= n) out.push(`reception_frame_index ${m.reception_frame_index} >= ${n} frames`)
+  if (m.decision_frame_index >= n) out.push(`decision_frame_index ${m.decision_frame_index} >= ${n} frames`)
   if (m.pass1_frame_index > m.reception_frame_index) out.push('pass1_frame_index after reception_frame_index')
+  if (m.decision_frame_index < m.reception_frame_index) out.push('decision_frame_index before reception_frame_index')
   const roster = m.frames[0].players.map((p) => p.pid)
   const set = new Set(roster)
   if (set.size !== roster.length) out.push('duplicate pid in frame 0')
