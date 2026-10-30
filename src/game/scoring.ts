@@ -21,7 +21,7 @@ export function decisionScore(chosenValue: number | null, bestValue: number): nu
 
 /**
  * Scan = timing + target (MODEL.scoring.scan; 60 + 40 by default).
- *   timing: timingFresh if you were looking around in the last recentS before reception,
+ *   timing: timingFresh if you were looking around in the last recentS before you had to pass,
  *           timingEarly if you only looked earlier
  *   target: targetFresh if the best option was inside your look cone in the last recentS,
  *           targetEarly if you only saw it earlier

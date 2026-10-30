@@ -53,8 +53,8 @@ export async function fitRiskAversion(
       for (const o of scoredOptions(tr)) if (!o.offside && o.ev !== undefined) evs.push(o.ev)
       for (let i = 0; i < tr.n; i++) {
         if (!tr.att[i] || i === tr.youIdx) continue
-        const p = posAt(tr, tr.rec, i)
-        const you = posAt(tr, tr.rec, tr.youIdx)
+        const p = posAt(tr, tr.dec, i)
+        const you = posAt(tr, tr.dec, tr.youIdx)
         const { ringsM, dirs, loftMinM } = SEARCH
         for (const r of ringsM)
           for (let a = 0; a < dirs; a++) {
@@ -91,7 +91,7 @@ export async function fitRiskAversion(
       if (m.actual.outcome === 'received' && tk) {
         const i = idxOf(tr, tk.pid)
         const end = toPortrait(m.actual.end.x, m.actual.end.y)
-        const at = posAt(tr, tr.rec, i)
+        const at = posAt(tr, tr.dec, i)
         const loft = measuredLoft ? proLofted(m) : false
         v =
           Math.hypot(end[0] - at[0], end[1] - at[1]) >= SEARCH.samePassM
@@ -103,7 +103,7 @@ export async function fitRiskAversion(
         const i = idxOf(tr, m.actual.intended_pid)
         v =
           measuredLoft && proLofted(m)
-            ? optionAt(tr, i, posAt(tr, tr.rec, i), undefined, RACE, true).value
+            ? optionAt(tr, i, posAt(tr, tr.dec, i), undefined, RACE, true).value
             : (scoredOptions(tr).find((o) => o.pid === m.actual.intended_pid)?.value ?? null)
       }
       if (v === null) continue

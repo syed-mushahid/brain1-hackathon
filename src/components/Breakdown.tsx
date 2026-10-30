@@ -122,12 +122,15 @@ function Why({ w, layers }: { w: WhyInfo; layers?: Layers }) {
 
 function Scan({ s }: { s: ScanInfo }) {
   const pct = (before: number) => `${Math.max(0, Math.min(100, (1 - before / s.span) * 100))}%`
+  // the pro held the ball before passing: mark when it reached you (one-touch: the end is both)
+  const hold = s.receivedBefore >= 0.15
   return (
     <>
-      <div className="tl" aria-label="Your looks before the ball arrived">
+      <div className="tl" aria-label="Your looks before you had to pass">
         <div className="tl-track">
           <div className="tl-fresh" style={{ left: pct(RECENT_SCAN_S) }} />
           <div className="tl-kick" style={{ left: pct(s.kickBefore) }} />
+          {hold && <div className="tl-kick" style={{ left: pct(s.receivedBefore) }} />}
           {s.looks.map((l, i) => (
             <div
               key={i}
@@ -139,7 +142,8 @@ function Scan({ s }: { s: ScanInfo }) {
         </div>
         <div className="tl-labels">
           <span style={{ left: pct(s.kickBefore) }}>pass to you</span>
-          <span className="end">ball arrives</span>
+          {hold && <span style={{ left: pct(s.receivedBefore) }}>at your feet</span>}
+          <span className="end">{hold ? 'you pass' : 'ball arrives'}</span>
         </div>
       </div>
       <div className="tl-key">

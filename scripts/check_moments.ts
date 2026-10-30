@@ -74,7 +74,7 @@ const pct = (p: number | null | undefined) => (p === null || p === undefined ? '
  *  race.reach of the ball's path where it can be reached (off your feet, not over his head, short of
  *  the receiver's own reach). -1 = the lane is clear. */
 function standingInLane(tr: Track, end: [number, number], lofted: boolean): number {
-  const you = posAt(tr, tr.rec, tr.youIdx)
+  const you = posAt(tr, tr.dec, tr.youIdx)
   const L = Math.hypot(end[0] - you[0], end[1] - you[1])
   if (L < 1e-3) return -1
   const B = flight(L, lofted)
@@ -84,7 +84,7 @@ function standingInLane(tr: Track, end: [number, number], lofted: boolean): numb
     const q = [you[0] + ((end[0] - you[0]) * s) / L, you[1] + ((end[1] - you[1]) * s) / L]
     for (let i = 0; i < tr.n; i++) {
       if (tr.att[i]) continue
-      const p = posAt(tr, tr.rec, i)
+      const p = posAt(tr, tr.dec, i)
       if (Math.hypot(p[0] - q[0], p[1] - q[1]) <= reach) return i
     }
   }
@@ -93,7 +93,7 @@ function standingInLane(tr: Track, end: [number, number], lofted: boolean): numb
 
 /** The pass you made in a result: completed? where to, lofted? (null when there was no pass / it was offside) */
 function madePass(tr: Track, r: RoundResult): { completed: boolean; end: [number, number]; lofted: boolean; asPro: boolean } | null {
-  const you = posAt(tr, tr.rec, tr.youIdx)
+  const you = posAt(tr, tr.dec, tr.youIdx)
   if (r.space) {
     if (r.space.offside || r.space.takerIdx < 0) return null
     // the flight the model used (a ball cut at the line is lofted by the length of your tap)
@@ -101,7 +101,7 @@ function madePass(tr: Track, r: RoundResult): { completed: boolean; end: [number
   }
   if (r.chosenIdx >= 0) {
     if (r.headline === 'Offside!') return null
-    const e = posAt(tr, tr.rec, r.chosenIdx)
+    const e = posAt(tr, tr.dec, r.chosenIdx)
     return { completed: !r.lost, end: e, lofted: r.lofted, asPro: false }
   }
   return null
@@ -274,13 +274,13 @@ function checkMoment(file: string): MomentReport {
   const proIntoSpace =
     m.actual.outcome === 'received' &&
     takerIdx >= 0 &&
-    Math.hypot(proEnd[0] - posAt(tr, tr.rec, takerIdx)[0], proEnd[1] - posAt(tr, tr.rec, takerIdx)[1]) >= MODEL.best.samePassM
+    Math.hypot(proEnd[0] - posAt(tr, tr.dec, takerIdx)[0], proEnd[1] - posAt(tr, tr.dec, takerIdx)[1]) >= MODEL.best.samePassM
   const proPid = m.actual.intended_pid ?? m.actual.target_pid
   const proIdx = idxOf(tr, proPid)
 
   // ---- taps: the best option, the pro's pass, random ones
   const taps: TapReport[] = []
-  const bestTap: [number, number] = best.intoSpace ? best.end : posAt(tr, tr.rec, best.idx)
+  const bestTap: [number, number] = best.intoSpace ? best.end : posAt(tr, tr.dec, best.idx)
   const rb = evaluate(tr, { tap: bestTap, scans: [], lofted: best.lofted })
   if (rb.best.alone || rb.scores.decision < 98)
     P.push(
@@ -292,7 +292,7 @@ function checkMoment(file: string): MomentReport {
   if (none.headline !== 'Too slow!') P.push(`no tap gives "${none.headline}"`)
   const proCol = none.breakdown.why.cols.find((c) => c.tone === 'pro')?.o ?? null
   if (m.actual.outcome === 'received' && proCol) {
-    const proTarget: [number, number] = proIntoSpace ? proEnd : posAt(tr, tr.rec, takerIdx >= 0 ? takerIdx : proIdx)
+    const proTarget: [number, number] = proIntoSpace ? proEnd : posAt(tr, tr.dec, takerIdx >= 0 ? takerIdx : proIdx)
     const laneD = standingInLane(tr, proTarget, lofted)
     const texts = [none.detail, ...none.breakdown.why.points].join(' | ')
     if (((proCol.p ?? 1) < 0.5 || laneD >= 0) && !/got through this time/.test(texts))
@@ -300,13 +300,13 @@ function checkMoment(file: string): MomentReport {
   }
   if (proCol && (proIntoSpace || lofted)) {
     const i = proIntoSpace ? takerIdx : proIdx
-    const want = optionAt(tr, i, proIntoSpace ? proEnd : posAt(tr, tr.rec, i), undefined, RACE, lofted).value
+    const want = optionAt(tr, i, proIntoSpace ? proEnd : posAt(tr, tr.dec, i), undefined, RACE, lofted).value
     if (Math.abs(proCol.value - want) > 0.05) P.push(`pro's pass valued ${proCol.value}, with its measured flight it is ${want}`)
   }
-  const proTap: [number, number] | null = proIntoSpace ? proEnd : proIdx >= 0 ? posAt(tr, tr.rec, proIdx) : null
+  const proTap: [number, number] | null = proIntoSpace ? proEnd : proIdx >= 0 ? posAt(tr, tr.dec, proIdx) : null
   if (proTap) taps.push(checkTap(tr, 'pro', proTap, P, lofted))
   const rnd = mulberry32(hashString(`check:${m.id}`))
-  const yp = posAt(tr, tr.rec, tr.youIdx)
+  const yp = posAt(tr, tr.dec, tr.youIdx)
   const mates = tr.pids.map((_, i) => i).filter((i) => tr.att[i] && i !== tr.youIdx)
   for (let k = 0; k < nRandom; k++) {
     let q: [number, number]
@@ -317,7 +317,7 @@ function checkMoment(file: string): MomentReport {
       q = [yp[0] + r * Math.sin(a), yp[1] - r * Math.cos(a)]
     } else {
       // around a teammate: his feet or the space near him
-      const p = posAt(tr, tr.rec, mates[Math.floor(rnd() * mates.length)])
+      const p = posAt(tr, tr.dec, mates[Math.floor(rnd() * mates.length)])
       const a = rnd() * 2 * Math.PI
       const r = rnd() * 10
       q = [p[0] + r * Math.cos(a), p[1] + r * Math.sin(a)]

@@ -17,7 +17,7 @@ type Stage = 'loading' | 'flyIn' | 'play' | 'pause' | 'after' | 'flyOut' | 'done
 
 const FLY_S = 1.6
 const PAUSE_S = 3.5
-const REPLAY_S = 3 // eyes: seconds shown before the reception
+const REPLAY_S = 3 // eyes: seconds shown before the decision (when you had to pass)
 const TV_LEAD_S = 1 // tv: seconds shown before the reception
 // broadcast camera: on the gantry of the near stand (stands start 8 m beyond the touchline)
 const TV_HEIGHT = 18
@@ -63,8 +63,8 @@ function Director({
     [],
   )
   const end = world.nFrames - 1
-  const hasAfter = end > world.rec
-  const f0 = Math.max(0, world.rec - (mode === 'tv' ? TV_LEAD_S : REPLAY_S) * FPS)
+  const hasAfter = end > world.dec
+  const f0 = Math.max(0, mode === 'tv' ? world.rec - TV_LEAD_S * FPS : world.dec - REPLAY_S * FPS)
 
   const eyeAt = (f: number, out: THREE.Vector3) => {
     const i = Math.round(f) * world.n + world.youIdx
@@ -140,8 +140,8 @@ function Director({
 
     // ---- eyes: top-down -> your eyes -> last seconds -> decision -> what happened -> top-down
     if (s.stage === 'play') {
-      c.f = Math.min(world.rec, c.f + dt * FPS)
-      if (c.f >= world.rec) {
+      c.f = Math.min(world.dec, c.f + dt * FPS)
+      if (c.f >= world.dec) {
         c.rate = 0
         c.highlight = true
         go('pause')
@@ -214,7 +214,7 @@ export default function Replay3D({
     const w = buildWorld(moment)
     return bestIdx !== undefined && bestIdx >= 0 ? { ...w, bestIdx } : w
   }, [moment, bestIdx])
-  const clock = useRef<Clock>({ f: Math.max(0, world.rec - REPLAY_S * FPS), rate: 0, highlight: false })
+  const clock = useRef<Clock>({ f: Math.max(0, world.dec - REPLAY_S * FPS), rate: 0, highlight: false })
   const skip = useRef(false)
   const [stage, setStage] = useState<Stage>('loading')
   const [beat, setBeat] = useState(0) // what is happening in the real play (for the captions)
@@ -235,7 +235,7 @@ export default function Replay3D({
   const caption: Record<Stage, string> = {
     loading: 'Loading 3D…',
     flyIn: 'Into your eyes…',
-    play: mode === 'tv' ? beats[beat] || 'The ball comes to you' : `${REPLAY_S} seconds before you receive the ball`,
+    play: mode === 'tv' ? beats[beat] || 'The ball comes to you' : `${REPLAY_S} seconds before you had to pass`,
     pause: best === null ? 'Decision moment' : `Decision moment – #${best} was the best option`,
     after: beats[beat],
     flyOut: 'Back to the overview',

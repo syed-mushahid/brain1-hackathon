@@ -1,6 +1,6 @@
 // "Your pass" replay: what the race model says happens after YOUR pass, as frames the 2D and
 // 3D replays can play like the real ones.
-//   - the ball leaves your feet at the decision moment towards where you aimed, with the model's
+//   - the ball leaves your feet at the decision frame (when the pro passed) towards where you aimed, with the model's
 //     flight (space.ts flight(): ground at RACE.ballSpeed, or a lofted arc when you double-tapped),
 //     stops there, and is taken by the winner at the time the model gave;
 //   - the winner keeps running for his reaction time, then sprints to the spot (the same path the
@@ -35,7 +35,8 @@ export function proStory(m: PlayedMoment): StoryMoment {
 
 export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): StoryMoment | null {
   const m: MomentData = tr.m
-  const rec = tr.rec
+  const dec = tr.dec // the ball leaves your feet here
+  const hold = dec - tr.rec // play.json starts at the reception
   // a pass into space, or a pass to feet the race says was cut out: replay that race
   const sp = res.space ?? res.lost
   // your tap was the pro's pass: what really happened
@@ -44,7 +45,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
     return { ...real, story: { ...real.story, who: 'you' } }
   }
 
-  const you = posAt(tr, rec, tr.youIdx)
+  const you = posAt(tr, dec, tr.youIdx)
   let taker = -1
   let end: [number, number]
   let tWin: number
@@ -56,7 +57,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
     outcome = sp.offside ? 'offside' : taker < 0 ? 'out' : sp.team === 'def' ? 'intercepted' : 'received'
   } else if (res.chosenIdx >= 0) {
     taker = res.chosenIdx
-    end = posAt(tr, rec, taker)
+    end = posAt(tr, dec, taker)
     const F0 = flight(Math.hypot(end[0] - you[0], end[1] - you[1]), res.lofted)
     tWin = F0.arrive + F0.control
     outcome = res.headline === 'Offside!' ? 'offside' : 'received'
@@ -72,14 +73,14 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
 
   // the chaser: quickest player of the other team to the spot (his own sprint, same model)
   const vel = (i: number): [number, number] => {
-    const a = posAt(tr, Math.max(0, rec - 2), i)
-    const b = posAt(tr, rec, i)
-    const k = FPS / Math.min(2, rec || 1)
+    const a = posAt(tr, Math.max(0, dec - 2), i)
+    const b = posAt(tr, dec, i)
+    const k = FPS / Math.min(2, dec || 1)
     return [(b[0] - a[0]) * k, (b[1] - a[1]) * k]
   }
   const react = (i: number) => (tr.att[i] ? RACE.reactMates : RACE.react)
   const timeTo = (i: number, q: [number, number]) => {
-    const p = posAt(tr, rec, i)
+    const p = posAt(tr, dec, i)
     const v = vel(i)
     return react(i) + Math.hypot(q[0] - p[0] - v[0] * react(i), q[1] - p[1] - v[1] * react(i)) / RACE.runSpeed
   }
@@ -91,7 +92,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   /** a sprinter: keeps his velocity for his reaction time, then runs straight at `target` (moving target
    *  ok); `wait` = he expects the ball where he stands (a pass to feet): no drifting off first */
   const runner = (i: number, wait = false) => {
-    const p0 = posAt(tr, rec, i)
+    const p0 = posAt(tr, dec, i)
     const v: [number, number] = wait ? [0, 0] : vel(i)
     const r = react(i)
     let pos: [number, number] = [...p0]
@@ -115,7 +116,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   // after winning it: carry it on (your team towards the opponents' goal = up, theirs = down)
   const carryDir = taker >= 0 && tr.att[taker] ? -1 : 1
 
-  const realFrames = play ? play.frames : [m.frames[rec]]
+  const realFrames = play ? play.frames.slice(hold) : [m.frames[dec]]
   const frames: Frame[] = []
   let won: [number, number] | null = null
   for (let j = 1; j <= Math.ceil(total); j++) {
@@ -140,7 +141,7 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
     }
     const cp = chaserRun ? chaserRun(t, tp ?? end, t < tWin ? 0 : CHASE_STOP_M) : null
     frames.push({
-      t: r1((rec + j) / FPS),
+      t: r1((dec + j) / FPS),
       ball: { x: r1(PITCH_L - ball[1]), y: r1(PITCH_W - ball[0]), z: r1(z) },
       players: base.players.map((p) => {
         const i = tr.pids.indexOf(p.pid)
@@ -151,9 +152,9 @@ export function buildUserPlay(tr: Track, res: RoundResult, play: Play | null): S
   }
   return {
     ...m,
-    frames: [...m.frames.slice(0, rec + 1), ...frames],
-    kickFrame: rec,
-    takeFrame: rec + (out ? tBall : Math.max(tWin, tBall)) * FPS,
+    frames: [...m.frames.slice(0, dec + 1), ...frames],
+    kickFrame: dec,
+    takeFrame: dec + (out ? tBall : Math.max(tWin, tBall)) * FPS,
     story: { who: 'you', taker: taker >= 0 ? tr.pids[taker] : null, outcome },
   }
 }

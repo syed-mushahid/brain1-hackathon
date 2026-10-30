@@ -16,10 +16,10 @@ export const CONE_RANGE = 50
 const RANGE_FEATHER = 8
 /** A head can't snap round: max turn speed (rad/s). Looking behind takes ~0.5 s. */
 export const HEAD_TURN = 360 * DEG
-/** Looks in the last scoring.recentS (1.5 s) before reception count as "recent" (model.config.ts). */
+/** Looks in the last scoring.recentS (1.5 s) before you had to pass count as "recent" (model.config.ts). */
 export const RECENT_SCAN_S = MODEL.scoring.recentS
 
-/** One continuous look (hold on the dial or the pitch). Times = seconds before reception. */
+/** One continuous look (hold on the dial or the pitch). Times = seconds before you had to pass (the decision frame). */
 export interface ScanRecord {
   dir: number
   startBefore: number

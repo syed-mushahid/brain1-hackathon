@@ -41,10 +41,10 @@ const optCache = new WeakMap<Track, PassOption[]>()
 export function scoredOptions(tr: Track): PassOption[] {
   const hit = optCache.get(tr)
   if (hit) return hit
-  const you = posAt(tr, tr.rec, tr.youIdx)
+  const you = posAt(tr, tr.dec, tr.youIdx)
   const out = teammateOptions(tr)
     .map((o): PassOption => {
-      const target = posAt(tr, tr.rec, idxOf(tr, o.pid))
+      const target = posAt(tr, tr.dec, idxOf(tr, o.pid))
       const e = passEV(you, target, passRisk(tr, target)?.slack ?? noOpponentS())
       return { ...o, value: o.offside ? 0 : e.points, p: e.p, epv: e.epvTarget, ev: e.ev }
     })
@@ -102,16 +102,16 @@ export function proPassOf(tr: Track): ProPass | null {
   const end = toPortrait(m.actual.end.x, m.actual.end.y)
   const received = m.actual.outcome === 'received' && takerIdx >= 0
   const intoSpace =
-    received && Math.hypot(end[0] - posAt(tr, tr.rec, takerIdx)[0], end[1] - posAt(tr, tr.rec, takerIdx)[1]) >= MODEL.best.samePassM
+    received && Math.hypot(end[0] - posAt(tr, tr.dec, takerIdx)[0], end[1] - posAt(tr, tr.dec, takerIdx)[1]) >= MODEL.best.samePassM
   const lofted = proLofted(m)
   const idx = received ? takerIdx : proIdx
   let out: ProPass | null = null
   if (idx >= 0) {
-    const at = posAt(tr, tr.rec, idx)
+    const at = posAt(tr, tr.dec, idx)
     const o = intoSpace
       ? optionAt(tr, takerIdx, end, undefined, RACE, lofted)
       : lofted && proIdx >= 0
-        ? optionAt(tr, proIdx, posAt(tr, tr.rec, proIdx), undefined, RACE, true)
+        ? optionAt(tr, proIdx, posAt(tr, tr.dec, proIdx), undefined, RACE, true)
         : (scoredOptions(tr).find((x) => x.pid === proPid) ?? null)
     out = { idx, end: received ? end : at, ring: intoSpace ? end : at, intoSpace, lofted, o }
   }
@@ -134,7 +134,7 @@ function choose(tr: Track): Choice {
   const hit = cache.get(tr)
   if (hit) return hit
   const m = tr.m
-  const f = tr.rec
+  const f = tr.dec
   const pOf = (c: BestPass) => c.o.p ?? 1
   const { minP, braveGain, spaceGain, runConeDeg, runSpeedMin, ringsM, dirs, samePassM, sameValue, loftMinM } = MODEL.best
   const you = posAt(tr, f, tr.youIdx)

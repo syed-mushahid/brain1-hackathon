@@ -49,10 +49,10 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   const steps = (
     <ol className="how">
       <li>
-        <b>Scan</b>: hold &amp; turn the dial (or drag on the pitch) to look around while the ball comes
+        <b>Scan</b>: hold &amp; turn the dial (or drag on the pitch) to look around until you have to pass
       </li>
       <li>
-        <b>Remember</b>: the screen goes dark when you receive
+        <b>Remember</b>: the screen goes dark when you have to pass
       </li>
       <li>
         <b>Pass</b>: tap a teammate or into space within 2 s · double-tap for a lofted pass

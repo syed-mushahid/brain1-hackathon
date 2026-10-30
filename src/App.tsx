@@ -336,10 +336,10 @@ export default function App() {
             <Who m={current!} />
             <ol className="how">
               <li>
-                <b>Scan</b>: while the ball comes, look around: hold &amp; turn the dial, drag on the pitch, or use the arrow keys
+                <b>Scan</b>: while the ball comes – and while it is at your feet – look around: hold &amp; turn the dial, drag on the pitch, or use the arrow keys
               </li>
               <li>
-                <b>Remember</b>: the screen goes dark when you receive the ball
+                <b>Remember</b>: the screen goes dark when you have to pass – at the moment the pro passed
               </li>
               <li>
                 <b>Pass</b>: click a teammate or into space within 2 s · double-click for a lofted pass
