@@ -2720,6 +2720,11 @@ button {
   gap: 10px;
 }
 
+/* the Home logo above the scan */
+.loader-brand {
+  margin: 0 0 36px;
+}
+
 .scan-loader {
   position: relative;
   width: 168px;

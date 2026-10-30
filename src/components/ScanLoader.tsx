@@ -23,6 +23,13 @@ export function ScanLoader({ progress }: { progress: [number, number] | null }) 
   const circ = 2 * Math.PI * R
   return (
     <div className="screen center loader" role="status" aria-live="polite" aria-label={`Loading, ${pct}%`}>
+      {/* the same logo as on Home */}
+      <div className="brand loader-brand">
+        <div className="logo-ring" aria-hidden />
+        <h1>
+          Scan <span>&amp;</span> Play
+        </h1>
+      </div>
       <div className="scan-loader" aria-hidden style={{ '--sweep': `${SWEEP_S}s`, '--cone': `${CONE_DEG}deg` } as CSSProperties}>
         <svg className="sl-ring" viewBox="0 0 200 200">
           <circle cx="100" cy="100" r={R} className="sl-ring-bg" />
