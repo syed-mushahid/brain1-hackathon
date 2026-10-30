@@ -1745,17 +1745,26 @@ button {
 }
 
 /* the looping moment: a band above the card (phones), the left column (desktop). Zoomed in on
-   "you" and faded to the page colour at every edge, so it melts into the background */
+   "you" and faded to the page colour at every edge, so it melts into the background. The fade is a
+   plain gradient laid over the canvas (not a CSS mask: a mask over a canvas that redraws can fail to
+   repaint on some GPUs) */
 .preview {
   position: relative;
   margin: 0 -16px; /* phones: edge to edge */
   overflow: hidden;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent),
-    linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent),
-    linear-gradient(180deg, transparent, #000 14%, #000 86%, transparent);
-  mask-composite: intersect;
+  isolation: isolate;
+  background: #0a1020;
+}
+
+.preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, #0a1020, rgba(10, 16, 32, 0) 14%, rgba(10, 16, 32, 0) 86%, #0a1020),
+    linear-gradient(180deg, #0a1020, rgba(10, 16, 32, 0) 14%, rgba(10, 16, 32, 0) 86%, #0a1020);
 }
 
 .preview canvas {

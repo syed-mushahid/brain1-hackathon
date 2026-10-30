@@ -6,8 +6,8 @@ import { dirTo } from '../game/vision'
 
 // A real moment on a loop (home screen), as you see it in the game: the ball coming to "you" in the
 // fog, a look over the shoulder sweeping the pitch. Zoomed in on "you" and faded into the page at
-// every edge. The game's own renderer, one data frame per draw (~10 fps); paused off screen, in a
-// hidden tab and with reduced motion (one still frame, mid-scan).
+// every edge. The game's own renderer, one data frame per draw (~10 fps); paused in a hidden tab and
+// with reduced motion (one still frame, mid-scan).
 
 const STEP_MS = 100 // one 10 fps data frame per draw
 const HOLD_FRAMES = 12 // the picture rests on the reception before the loop restarts
@@ -29,7 +29,6 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     const ball = new Float32Array(2)
     const reduce = matchMedia('(prefers-reduced-motion: reduce)')
     let f = 0
-    let onScreen = true
     let timer = 0
 
     const draw = (frame: number) => {
@@ -72,7 +71,7 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
       draw(f)
     }
     const tick = () => {
-      if (!onScreen || document.hidden) return
+      if (document.hidden) return
       f = f >= tr.rec + HOLD_FRAMES ? 0 : f + 1
       draw(f)
     }
@@ -85,15 +84,17 @@ export function MomentPreview({ moment, fit }: { moment: Moment; fit: 'band' | '
     }
     layout()
     run()
+    // measure again once the page has settled (the box can still be 0 x 0 on the very first pass)
+    const raf = requestAnimationFrame(layout)
     const ro = new ResizeObserver(layout)
     ro.observe(wrap)
-    const io = new IntersectionObserver(([e]) => (onScreen = e.isIntersecting))
-    io.observe(wrap)
+    window.addEventListener('resize', layout)
     reduce.addEventListener('change', run)
     return () => {
       clearInterval(timer)
+      cancelAnimationFrame(raf)
       ro.disconnect()
-      io.disconnect()
+      window.removeEventListener('resize', layout)
       reduce.removeEventListener('change', run)
     }
   }, [moment, fit])
