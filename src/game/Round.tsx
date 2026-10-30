@@ -31,11 +31,13 @@ const INTRO_MS = 1300
 const LOOK_FADE_IN_MS = 80
 const LOOK_FADE_OUT_MS = 160
 const REVEAL_ANIM_MS = 900
-const DARKEN_MS = 300 // vision shrinking to "you" at reception
+const DARKEN_MS = 300 // vision shrinking to "you" at the decision frame
 const LIFT_MS = 350 // darkness lifting at the reveal
 const FRAME_MARGIN_M = 6 // space kept around the action when the reveal camera frames it
 /** a touch screen: "Tap anywhere to start" rather than "Click anywhere or press Enter" */
 const TOUCH = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+/** a hold this short (s) is a one-touch pass: no hold phase, the screen goes dark at the reception */
+const HOLD_MIN_S = 0.15
 const REPLAY_LEAD_S = 1 // the 2D replay starts this long before the reception
 const REPLAY_HOLD_MS = 1200 // ...and holds the last frame this long before returning to the reveal
 /** the reveal camera may zoom out this far: with the tall results sheet only a strip of pitch is left */
@@ -103,6 +105,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
   const dialRef = useRef<HTMLDivElement>(null)
   const dialTimeRef = useRef<HTMLElement>(null)
   const [phase, setPhase] = useState<Phase>('intro')
+  const [holding, setHolding] = useState(false) // the hold phase: ball at your feet, still scanning
   const [started, setStarted] = useState(false) // the player started the round
   const [legendOpen, setLegendOpen] = useState(false)
   const [legendEl, setLegendEl] = useState<HTMLDivElement | null>(null)
@@ -150,6 +153,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       view: { k: 1, tx: 0, ty: 0 } as View,
       settled: false, // reveal animation finished: stop redrawing every frame
       kicked: false,
+      received: false, // pass 1 reached you (the hold phase starts, if the pro held the ball)
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
       waitForStart: true, // nothing moves until the player presses "Start scanning"
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
@@ -175,7 +179,9 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       g.t0 = now
       setPhase(p)
     }
-    const before = () => (track.rec - g.f) / FPS
+    // every judgement is made at the decision frame: where the pro really passed (track.dec)
+    const before = () => (track.dec - g.f) / FPS
+    const holdFrames = (track.dec - track.rec) / FPS >= HOLD_MIN_S ? track.dec - track.rec : 0
     const stopLook = () => {
       g.look.active = false
       g.look.rec = null
@@ -183,9 +189,9 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
     const finish = (tap: [number, number] | null, now: number, lofted = false) => {
       if (g.pending) clearTimeout(g.pending.timer)
       g.pending = null
-      g.f = track.rec
+      g.f = track.dec
       stopLook()
-      sample(track, track.rec, pos, ball) // reveal the TRUE positions at reception
+      sample(track, track.dec, pos, ball) // reveal the TRUE positions when you had to pass
       const res = evaluate(track, { tap, scans: g.scans, lofted })
       g.top = involved(track, res)
       g.framed = named(track, [res.headline, res.detail])
@@ -313,7 +319,8 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       },
       replay(played, kick, take) {
         if (g.phase !== 'reveal') return
-        // frame the whole play: the ball's path, you and whoever ends up with it
+        // frame the whole play: the ball's path, you and whoever ends up with it (from just before
+        // the reception, so the hold before the pass is in it)
         const f0 = Math.max(0, played.rec - REPLAY_LEAD_S * FPS)
         const end = played.nFrames - 1
         const us: number[] = []
@@ -340,7 +347,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
       stopReplay() {
         if (!g.replay) return
         g.replay = null
-        sample(track, track.rec, pos, ball) // back to the reveal picture
+        sample(track, track.dec, pos, ball) // back to the reveal picture
         g.settled = false
         setReplayStage(-1)
       },
@@ -363,11 +370,20 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           g.kicked = true
           sound.kick()
         }
-        if (g.f >= track.rec) {
-          g.f = track.rec
-          stopLook()
+        if (!g.received && g.f >= track.rec) {
+          g.received = true
           sound.kick(0.4) // first touch
           vibrate(25)
+          if (holdFrames > 0) setHolding(true) // the ball stays at your feet: keep scanning
+        }
+        if (g.f >= track.dec) {
+          // the moment the pro passed: the screen goes dark
+          g.f = track.dec
+          stopLook()
+          if (holdFrames > 0) {
+            setHolding(false)
+            vibrate(15)
+          }
           go('decide', now)
         }
       }
@@ -458,6 +474,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         headDir: g.look.dir,
         look: g.look.alpha,
         decideLeft: g.phase === 'decide' ? Math.max(0, 1 - (now - g.t0) / S.decideMs) : 1,
+        holdLeft: g.phase === 'approach' && g.received && holdFrames > 0 ? Math.max(0, Math.min(1, (track.dec - g.f) / holdFrames)) : null,
         aim: g.phase === 'decide' ? (g.pending?.q ?? null) : null,
         reveal: g.reveal,
         view: g.view,
@@ -603,6 +620,11 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
           </div>
         )}
         {replayError && <div className="replay2d-bar error">Replay unavailable – {replayError}</div>}
+        {phase === 'approach' && holding && (
+          <div className="overlay hold-hint" role="status">
+            Ball at your feet – keep scanning
+          </div>
+        )}
         {phase === 'decide' && (
           <div className="overlay banner">
             PASS! Tap a teammate – or the space
@@ -622,7 +644,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         {proMode && phase === 'intro' && (
           <div className="overlay intro pro-intro">
             <div className="big">Pro mode</div>
-            <div className="sub">Look around before the ball arrives</div>
+            <div className="sub">Look around before you have to pass</div>
             <Who m={m} />
             {startHint}
           </div>
@@ -632,7 +654,7 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
         {/* the controller keeps its place until the reveal (the pitch doesn't resize while you play);
             at the reveal it goes and the pitch grows under the results sheet */}
         <div className="scan-controls" style={phase === 'reveal' || proMode ? { visibility: 'hidden' } : undefined}>
-          <span className="dial-hint">{phase === 'approach' ? 'Hold & turn to scan' : phase === 'decide' ? 'Pass!' : ''}</span>
+          <span className="dial-hint">{phase === 'approach' ? (holding ? 'Keep scanning' : 'Hold & turn to scan') : phase === 'decide' ? 'Pass!' : ''}</span>
           <ScanDial
             disabled={phase !== 'approach'}
             onStart={(d) => api.current?.lookStart(d)}
@@ -692,12 +714,13 @@ export function Round({ track, settings, label, onResult, children, proMode = fa
 /** The box the reveal camera frames (u0, v0, u1, v1 in metres): every arrow and run, and every
  *  player the reveal is about (`top`), with room around them. */
 export function revealBox(track: Track, R: RevealDraw, players: number[]): [number, number, number, number] {
-  const pts: [number, number][] = [posAt(track, track.rec, track.youIdx), [track.ball[track.rec * 2], track.ball[track.rec * 2 + 1]], R.proEnd]
-  for (const i of players) pts.push(posAt(track, track.rec, i))
+  const f = track.dec
+  const pts: [number, number][] = [posAt(track, f, track.youIdx), [track.ball[f * 2], track.ball[f * 2 + 1]], R.proEnd]
+  for (const i of players) pts.push(posAt(track, f, i))
   for (const t of R.threats) if (R.show.threats.includes(t.idx)) pts.push(t.from, t.at)
-  if (R.bestIdx >= 0) pts.push(posAt(track, track.rec, R.bestIdx), R.best.end, R.best.ring, ...(R.best.alone ? (R.best.run ?? []) : []))
+  if (R.bestIdx >= 0) pts.push(posAt(track, f, R.bestIdx), R.best.end, R.best.ring, ...(R.best.alone ? (R.best.run ?? []) : []))
   if (R.brave && R.show.brave) pts.push(R.brave.end, ...(R.brave.run ?? []))
-  if (R.chosenIdx >= 0) pts.push(posAt(track, track.rec, R.chosenIdx))
+  if (R.chosenIdx >= 0) pts.push(posAt(track, f, R.chosenIdx))
   if (R.tap) pts.push(R.tap)
   if (R.run) pts.push(...R.run.pts)
   if (R.space) pts.push(R.space.end, ...(R.space.run?.pts ?? []))

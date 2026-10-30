@@ -196,6 +196,18 @@ button {
   animation: pop 0.3s ease both;
 }
 
+/* the hold phase: the ball is at your feet, the pro hasn't passed yet - keep scanning */
+.overlay.hold-hint {
+  justify-content: flex-start;
+  padding-top: 18%;
+  font-size: 1rem;
+  font-weight: 800;
+  color: #22e3ff;
+  letter-spacing: 0.02em;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+  animation: pop 0.3s ease both;
+}
+
 .overlay.banner small {
   display: block;
   margin-top: 6px;
