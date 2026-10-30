@@ -27,6 +27,7 @@ import { FEATURES } from './lib/features'
 import { useMedia } from './lib/useMedia'
 import { GuidePanel } from './components/GuidePanel'
 import { StatsScreen } from './components/StatsScreen'
+import { ScanLoader } from './components/ScanLoader'
 import { addRound, roundTags } from './lib/stats'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
@@ -284,7 +285,7 @@ export default function App() {
   }
 
   if (error) return <div className="screen center">Could not load the moments – {error}</div>
-  if (!data) return <div className="screen center">Loading{progress ? ` moments ${progress[0]}/${progress[1]}` : ''}…</div>
+  if (!data) return <ScanLoader progress={progress} />
 
   if (showStats) return <StatsScreen profile={profile} onBack={() => setShowStats(false)} />
 
