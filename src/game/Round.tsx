@@ -67,6 +67,10 @@ interface Props {
   children?: ReactNode
   /** Pro mode: the scan phase is played first-person in 3D (lazy-loaded) */
   proMode?: boolean
+  /** big screens: the intro's instructions are in the panel left of the pitch (only the start button here) */
+  desk?: boolean
+  /** the guide (rules) toggle in the header */
+  guide?: { open: boolean; toggle: () => void }
 }
 
 interface Api {
@@ -78,6 +82,8 @@ interface Api {
   proLook: (dir: number) => void
   tap: (cx: number, cy: number) => void
   ready: () => void
+  /** the player pressed "Start scanning": the ball starts rolling */
+  start: () => void
   /** play the real frames (reception -> pass -> takeover) on the pitch */
   replay: (played: Track, kick: number, take: number) => void
   /** reveal: drag the pitch by (dx, dy) css px; recenter = back to the automatic framing */
@@ -87,13 +93,14 @@ interface Api {
   setLayers: (show: RevealDraw['show']) => void
 }
 
-export function Round({ track, difficulty, settings, label, onResult, children, proMode = false }: Props) {
+export function Round({ track, difficulty, settings, label, onResult, children, proMode = false, desk = false, guide }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dialRef = useRef<HTMLDivElement>(null)
   const dialTimeRef = useRef<HTMLElement>(null)
   const [phase, setPhase] = useState<Phase>('intro')
+  const [started, setStarted] = useState(false) // "Start scanning" pressed
   // 2D replay: -1 = off, 0 = ball coming, 1 = on the ball, 2 = pass travelling, 3 = taken over
   const [replayStage, setReplayStage] = useState(-1)
   const [replayError, setReplayError] = useState('')
@@ -139,6 +146,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       settled: false, // reveal animation finished: stop redrawing every frame
       kicked: false,
       waitFor3D: proMode, // Pro mode: hold the intro until the 3D view is ready
+      waitForStart: true, // nothing moves until the player presses "Start scanning"
       top: [track.youIdx] as number[], // drawn on top, never nudged (the reveal adds who the text is about)
       framed: [] as number[], // reveal: the players the headline and detail name (the camera keeps them in view)
       replay: null as null | { tr: Track; f: number; end: number; kick: number; take: number; hold: number; stage: number; view: View },
@@ -147,7 +155,6 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       // the decision: a first tap waits taps.doubleTapMs for a second one (double tap = lofted pass)
       pending: null as null | { q: [number, number]; at: number; timer: ReturnType<typeof setTimeout> },
     }
-    sound.whistle(1, 0.22)
     let scene: Scene | null = null
 
     const fit = () => {
@@ -291,6 +298,13 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
           g.t0 = performance.now()
         }
       },
+      start() {
+        if (g.phase !== 'intro' || !g.waitForStart) return
+        g.waitForStart = false
+        g.t0 = performance.now() - INTRO_MS // straight into the approach (Pro mode still waits for 3D)
+        sound.whistle(1, 0.22)
+        setStarted(true)
+      },
       replay(played, kick, take) {
         if (g.phase !== 'reveal') return
         // frame the whole play: the ball's path, you and whoever ends up with it
@@ -335,7 +349,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       raf = requestAnimationFrame(loop)
       const dt = Math.min(50, now - last)
       last = now
-      if (g.phase === 'intro' && g.waitFor3D) g.t0 = now
+      if (g.phase === 'intro' && (g.waitFor3D || g.waitForStart)) g.t0 = now
       if (g.phase === 'intro' && now - g.t0 >= INTRO_MS) go('approach', now)
       if (g.phase === 'approach') {
         g.f += (dt / 1000) * FPS * S.speed
@@ -457,6 +471,12 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       return x === 0 && y === 0 ? null : Math.atan2(x, y)
     }
     const onKey = (e: KeyboardEvent) => {
+      // Enter / Space on the start screen = "Start scanning"
+      if (e.type === 'keydown' && (e.key === 'Enter' || e.key === ' ') && g.phase === 'intro' && g.waitForStart) {
+        e.preventDefault()
+        api.current?.start()
+        return
+      }
       if (!e.key.startsWith('Arrow')) return
       e.preventDefault()
       if (e.type === 'keydown') held.add(e.key)
@@ -508,6 +528,11 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
     api.current?.lookEnd()
   }
   const m = track.m
+  const startButton = (
+    <button className="cta start-btn" onClick={() => api.current?.start()} autoFocus>
+      ▶ Start scanning
+    </button>
+  )
 
   return (
     <div ref={rootRef} className={`round phase-${phase}`} data-moment={track.m.id}>
@@ -515,6 +540,11 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
         <span className="chip">{label}</span>
         <span className="clock">{m.clock}′</span>
         <span className={`chip diff diff-${difficulty}`}>{difficulty}</span>
+        {guide && (
+          <button className={`icon-btn guide-btn ${guide.open ? 'on' : ''}`} onClick={guide.toggle} aria-pressed={guide.open} aria-label="Rules and guide">
+            ?
+          </button>
+        )}
       </header>
       <div
         className="pitch-wrap"
@@ -526,10 +556,16 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
       >
         <canvas ref={canvasRef} className="pitch" />
         {phase === 'intro' && !proMode && (
-          <div className="overlay intro">
-            <div className="big">Get ready</div>
-            <div className="sub">Hold &amp; turn the dial – or drag on the pitch – to look around.</div>
-            <Who m={m} />
+          <div className={`overlay intro ${desk ? 'desk' : ''}`}>
+            {/* big screens: the instructions are in the panel on the left */}
+            {!desk && (
+              <>
+                <div className="big">Get ready</div>
+                <div className="sub">Hold &amp; turn the dial – or drag on the pitch – to look around.</div>
+                <Who m={m} />
+              </>
+            )}
+            {!started && startButton}
           </div>
         )}
         {replayStage >= 0 && (
@@ -565,6 +601,7 @@ export function Round({ track, difficulty, settings, label, onResult, children, 
             <div className="big">Pro mode</div>
             <div className="sub">Look around before the ball arrives</div>
             <Who m={m} />
+            {!started && startButton}
           </div>
         )}
       </div>
@@ -674,7 +711,7 @@ export function named(tr: Track, texts: string[]): number[] {
 }
 
 /** "You are <player> · <team> · <minute>" on the intro screen */
-function Who({ m }: { m: MomentData }) {
+export function Who({ m }: { m: MomentData }) {
   const you = m.names[m.you_pid]
   const team = m.context.attacking === 'home' ? m.context.home : m.context.away
   return (

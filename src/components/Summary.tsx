@@ -57,7 +57,7 @@ export function Summary({ s, onHome, onTraining }: { s: SessionSummary; onHome: 
           </small>
         </div>
       ))}
-      <PlayerCard before={s.before} after={s.after} level={s.level} />
+      <PlayerCard before={s.before} after={s.after} />
       {s.insight && <p className={`insight ${s.insight.tone}`}>{s.insight.text}</p>}
       <ShareButton text={shareText(s.brains, s.score, s.kind === 'training')} />
       <div className="row next-actions">

@@ -1,28 +1,31 @@
 import { WEIGHTS } from '../game/scoring'
 import { MODEL } from '../game/model.config'
-import { ROUNDS_PER_SESSION } from '../App'
 
-const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase())
-
-/** Big screens, right of the pitch during a round: where you are, a way home, the rules. */
+/** The rules during a round, hidden until asked for (the "?" in the round's header): a panel right
+ *  of the pitch on big screens, a full-screen sheet on phones. Also the way home. */
 export function GuidePanel({
-  kind,
-  round,
-  level,
   onHome,
   onEnd,
+  onClose,
+  sheet = false,
 }: {
-  kind: 'daily' | 'training' | 'test'
-  round: number
-  level: string | null
   onHome: () => void
   /** training: end the session and see the summary */
   onEnd?: () => void
+  onClose: () => void
+  /** phones: over the whole screen */
+  sheet?: boolean
 }) {
   const pct = (w: number) => `${Math.round(w * 100)}%`
   const { green, yellow } = MODEL.scoring.squares
   return (
-    <aside className="desk-panel desk-right" aria-label="Rules and guide">
+    <aside className={`desk-panel ${sheet ? 'guide-sheet' : 'desk-right'}`} aria-label="Rules and guide">
+      <div className="guide-head">
+        <h2>Guide</h2>
+        <button className="icon-btn close" onClick={onClose} aria-label="Hide the guide">
+          ×
+        </button>
+      </div>
       <div className="guide-nav">
         <button className="cta ghost" onClick={onHome}>
           ← Home
@@ -33,13 +36,6 @@ export function GuidePanel({
           </button>
         )}
       </div>
-      <p className="guide-where">
-        {kind === 'daily'
-          ? `Daily Challenge · moment ${round} of ${ROUNDS_PER_SESSION}`
-          : kind === 'training'
-            ? `Free training · round ${round} · level ${cap(level ?? 'normal')} (adapts to you) · play as long as you like`
-            : `Test · try ${round} · not recorded`}
-      </p>
 
       <h3>How to play</h3>
       <ol className="how">

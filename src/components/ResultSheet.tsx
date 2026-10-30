@@ -259,11 +259,11 @@ export function ResultSheet({ result, onNext, nextLabel, onWatch3D, exit, desk =
             <h3>Replay</h3>
             {replayPicks}
             {viewSwitch}
-            <h3>On the pitch</h3>
-            <Legend result={result} active={active} />
           </aside>,
           document.body,
         )}
+        {/* what the lines mean: an ⓘ at the top left of the pitch, as on phones (they have it top right) */}
+        {!ctl.replaying && <PitchLegend result={result} active={active} side="left" />}
         <div ref={sheetRef} className="result-sheet desk">
           {nextButtons}
         </div>
@@ -387,11 +387,11 @@ function Legend({ result: r, active }: { result: RoundResult; active: string[] }
   )
 }
 
-/** "ⓘ" on the pitch (phones): opens the legend. */
-function PitchLegend({ result, active }: { result: RoundResult; active: string[] }) {
+/** "ⓘ" on the pitch: opens the legend. */
+function PitchLegend({ result, active, side = 'right' }: { result: RoundResult; active: string[]; side?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className={`pitch-info ${open ? 'open' : ''}`}>
+    <div className={`pitch-info ${side} ${open ? 'open' : ''}`}>
       <button className="info-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="What the lines mean">
         ⓘ
       </button>

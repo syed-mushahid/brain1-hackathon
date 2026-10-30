@@ -2,7 +2,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { Moment, MomentData } from './types'
 import { buildTrack } from './game/track'
 import { loadMoments } from './data/load'
-import { Round, type RoundSettings } from './game/Round'
+import { Round, Who, type RoundSettings } from './game/Round'
 import type { RoundResult } from './game/evaluate'
 import { ResultSheet } from './components/ResultSheet'
 import { Home } from './components/Home'
@@ -26,6 +26,8 @@ import { MODEL } from './game/model.config'
 import { FEATURES } from './lib/features'
 import { useMedia } from './lib/useMedia'
 import { GuidePanel } from './components/GuidePanel'
+import { StatsScreen } from './components/StatsScreen'
+import { addRound, roundTags } from './lib/stats'
 import { sound } from './lib/sound'
 import { loadProScan3D, loadReplay3D, Replay3D } from './three/lazy'
 import { loadPlay, withPlay } from './lib/plays'
@@ -76,6 +78,9 @@ export default function App() {
   const proMode = FEATURES.proMode && profile.proMode
   const [session, setSession] = useState<Session | null>(null)
   const [summary, setSummary] = useState<SessionSummary | null>(null)
+  const [showStats, setShowStats] = useState(false)
+  // the rules during a round: hidden until the "?" in the round's header asks for them
+  const [guideOpen, setGuideOpen] = useState(false)
   const [replay, setReplay] = useState<{ moment: MomentData; mode: ReplayMode; bestIdx: number } | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
 
@@ -128,6 +133,7 @@ export default function App() {
       queue = [forced ?? pickTraining(profile, data.moments, [])]
     }
     setSummary(null)
+    setGuideOpen(false) // a new session starts with the guide hidden
     setSession({
       kind,
       queue,
@@ -147,6 +153,7 @@ export default function App() {
     if (proMode) void loadProScan3D()
     setUrlTest(m.id)
     setSummary(null)
+    setGuideOpen(false) // a new session starts with the guide hidden
     setSession({
       kind: 'test',
       queue: [m],
@@ -173,7 +180,7 @@ export default function App() {
       return
     }
     const p = recordRound(profile, current.id, res.scores)
-    setProfile(p)
+    setProfile({ ...p, stats: addRound(p.stats, roundTags(res)) }) // the Statistics screen's counts
     // the rule (profile.ts recordRound) looks at the last 3 rounds: keep that average for the summary
     const avg = Math.round(p.history.slice(-3).reduce((a, r) => a + r.brain, 0) / Math.min(3, p.history.length))
     setSession({
@@ -272,6 +279,8 @@ export default function App() {
   if (error) return <div className="screen center">Could not load the moments – {error}</div>
   if (!data) return <div className="screen center">Loading{progress ? ` moments ${progress[0]}/${progress[1]}` : ''}…</div>
 
+  if (showStats) return <StatsScreen profile={profile} onBack={() => setShowStats(false)} />
+
   if (summary)
     return <Summary s={summary} onHome={() => setSummary(null)} onTraining={() => start('training')} />
 
@@ -294,6 +303,8 @@ export default function App() {
           label={label}
           onResult={onResult}
           proMode={session.kind !== 'daily' && proMode}
+          desk={desk}
+          guide={{ open: guideOpen, toggle: () => setGuideOpen((o) => !o) }}
         >
           {session.result && (
             <ResultSheet
@@ -313,17 +324,29 @@ export default function App() {
           )}
         </Round>
         {desk && !session.result && (
-          <aside className="desk-panel desk-left waiting" aria-label="Your result">
-            <p>Your score, the feedback and the replays appear here after your pass.</p>
+          <aside className="desk-panel desk-left intro-panel" aria-label="Get ready">
+            <h2>Get ready</h2>
+            <Who m={current!} />
+            <ol className="how">
+              <li>
+                <b>Scan</b>: while the ball comes, look around: hold &amp; turn the dial, drag on the pitch, or use the arrow keys
+              </li>
+              <li>
+                <b>Remember</b>: the screen goes dark when you receive the ball
+              </li>
+              <li>
+                <b>Pass</b>: click a teammate or into space within 2 s · double-click for a lofted pass
+              </li>
+            </ol>
+            <p className="intro-note">Press “Start scanning” (or Enter) when you're ready. Your score, the feedback and the replays appear here after your pass.</p>
           </aside>
         )}
-        {desk && (
+        {guideOpen && (
           <GuidePanel
-            kind={session.kind}
-            round={n}
-            level={session.kind === 'training' ? profile.level : null}
             onHome={goHome}
             onEnd={session.kind === 'training' && session.brains.length ? () => finish(true) : undefined}
+            onClose={() => setGuideOpen(false)}
+            sheet={!desk}
           />
         )}
         {replayLoading && <div className="replay3d r3-loading">Loading 3D…</div>}
@@ -346,6 +369,7 @@ export default function App() {
       onTest={startTest}
       onToggleMute={toggleMute}
       onTogglePro={togglePro}
+      onStats={() => setShowStats(true)}
       // the hook for the tutorial round: until it exists, FEATURES.tutorial keeps the button hidden
       onHowToPlay={FEATURES.tutorial ? () => start('training') : undefined}
     />

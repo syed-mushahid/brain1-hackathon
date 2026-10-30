@@ -2,6 +2,7 @@ import type { Difficulty, Moment } from '../types'
 import type { RoundSettings } from '../game/Round'
 import type { Scores } from '../game/scoring'
 import { dayKey, daysBetween, hashString, isoWeek, load, mulberry32, save, shuffle } from './util'
+import { emptyStats, type Stats } from './stats'
 
 const KEY = 'scan-and-play/profile/v1'
 
@@ -24,6 +25,8 @@ export interface Profile {
   daily: { day: string; brains: number[]; score: number } | null
   muted: boolean
   proMode: boolean // training scan phase in 3D first-person
+  /** lifetime counts for the Statistics screen (lib/stats.ts) */
+  stats: Stats
 }
 
 const EMPTY: Profile = {
@@ -35,6 +38,7 @@ const EMPTY: Profile = {
   daily: null,
   muted: false,
   proMode: false,
+  stats: emptyStats(dayKey()),
 }
 
 export const loadProfile = (): Profile => load(KEY, EMPTY)

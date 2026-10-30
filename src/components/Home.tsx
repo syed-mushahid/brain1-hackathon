@@ -25,13 +25,13 @@ interface Props {
   onTest: (m: Moment) => void
   onToggleMute: () => void
   onTogglePro: () => void
-  /** "How to play": shown only when there is a tutorial to start (lib/features.ts) */
+  /** the Statistics screen */
+  onStats: () => void
+  /** the tutorial round, offered in "How to play" once it exists (lib/features.ts) */
   onHowToPlay?: () => void
 }
 
-const cap = (s: string) => s.replace(/^./, (c) => c.toUpperCase())
-
-export function Home({ profile, moments, preview, onDaily, onTraining, onTest, onToggleMute, onTogglePro, onHowToPlay }: Props) {
+export function Home({ profile, moments, preview, onDaily, onTraining, onTest, onToggleMute, onTogglePro, onStats, onHowToPlay }: Props) {
   const wide = useMedia('(min-width: 1024px)')
   useHomeMusic(profile.muted)
   // a clock for the "next challenge in" countdown; at midnight the new challenge appears by itself
@@ -62,7 +62,7 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
   const card = (
     <>
       {preview && !wide && <MomentPreview moment={preview} fit="band" />}
-      <PlayerCard after={r} level={profile.level} locked={r.rounds < RATING_MIN_ROUNDS} />
+      <PlayerCard after={r} locked={r.rounds < RATING_MIN_ROUNDS} />
       {insight && <p className={`insight ${insight.tone}`}>{insight.text}</p>}
     </>
   )
@@ -130,7 +130,7 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
       </section>
 
       <button className={`cta ${daily ? '' : 'ghost'}`} onClick={onTraining}>
-        Free training · Level: {cap(profile.level)} <small className="cta-sub">(adapts to you)</small>
+        Start Training
       </button>
       {FEATURES.proMode && (
         <button className={`pro-toggle ${profile.proMode ? 'on' : ''}`} onClick={onTogglePro} role="switch" aria-checked={profile.proMode}>
@@ -140,14 +140,15 @@ export function Home({ profile, moments, preview, onDaily, onTraining, onTest, o
           </span>
         </button>
       )}
-      {/* desktop: the instructions open from "How to play" so Home fits one screen; phones show them */}
-      {wide ? (
+      {/* the instructions open from "How to play" (they're also on the round's start screen) */}
+      <div className="home-more">
+        <button className="cta ghost how-btn" onClick={onStats}>
+          📊 Statistics
+        </button>
         <button className="cta ghost how-btn" onClick={() => howRef.current?.showModal()}>
           How to play
         </button>
-      ) : (
-        steps
-      )}
+      </div>
       <dialog ref={howRef} className="how-dialog" aria-label="How to play" onClick={(e) => e.target === e.currentTarget && howRef.current?.close()}>
         <h2>How to play</h2>
         {steps}
